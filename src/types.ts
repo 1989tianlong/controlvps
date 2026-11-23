@@ -1,0 +1,131 @@
+export type AuthMethod = "password" | "key" | "agent";
+
+export type TrustedExecutor = <T>(
+  server: Server,
+  operation: (allowUnknownHost: boolean) => Promise<T>,
+) => Promise<T>;
+
+export interface ServerInput {
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: AuthMethod;
+  privateKeyPath?: string;
+  password?: string;
+  keyPassphrase?: string;
+  groupName?: string;
+  tags: string[];
+  provider?: string;
+  region?: string;
+  notes?: string;
+  cost?: number;
+  currency?: string;
+  expiresAt?: string;
+}
+
+export interface Server extends Omit<ServerInput, "password" | "keyPassphrase"> {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  hasPassword: boolean;
+  hasKeyPassphrase: boolean;
+}
+
+export interface ConnectionTest {
+  success: boolean;
+  message: string;
+  latencyMs: number;
+  hostname: string;
+  os: string;
+  fingerprint: string;
+}
+
+export interface ServerMetrics {
+  serverId: string;
+  hostname: string;
+  os: string;
+  uptimeSeconds: number;
+  cpuUsage: number;
+  memoryTotal: number;
+  memoryUsed: number;
+  diskTotal: number;
+  diskUsed: number;
+  networkRxBytesPerSecond: number;
+  networkTxBytesPerSecond: number;
+  loadAverage: [number, number, number];
+  collectedAt: string;
+}
+
+export type QuickAction =
+  | "system_info"
+  | "processes"
+  | "disk_usage"
+  | "system_logs"
+  | "clean_cache"
+  | "reboot";
+
+export interface ActionResult {
+  action: QuickAction;
+  command: string;
+  output: string;
+  exitCode: number;
+  durationMs: number;
+}
+
+export interface OperationLog {
+  id: number;
+  serverId: string;
+  serverName: string;
+  action: string;
+  success: boolean;
+  summary: string;
+  createdAt: string;
+}
+
+export interface TerminalSession {
+  terminalId: string;
+  fingerprint: string;
+}
+
+export interface AppInfo {
+  version: string;
+  dataDir: string;
+  knownHostsPath: string;
+  credentialStore: string;
+}
+
+export interface CatalogOffer {
+  id: string;
+  provider: string;
+  plan: string;
+  regions: string[];
+  cpu: number | null;
+  memoryGb: number | null;
+  diskGb: number | null;
+  transferTb: number | null;
+  monthlyPrice: number | null;
+  currency: "USD" | "EUR";
+  virtualization: string;
+  sourceUrl: string;
+  updatedAt: string;
+}
+
+export type FreeKind = "always_free" | "credit" | "trial" | "education";
+
+export interface FreeProgram {
+  id: string;
+  provider: string;
+  title: string;
+  kind: FreeKind;
+  summary: string;
+  resources: string[];
+  regions: string[];
+  requiresCard: boolean | null;
+  validity: string;
+  billingRisk: string;
+  sourceUrl: string;
+  lastVerified: string;
+  status: "verified" | "unverified";
+  conditions: string[];
+}
