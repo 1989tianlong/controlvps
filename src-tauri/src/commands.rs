@@ -10,11 +10,14 @@ use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, BatchResult, ConnectionTest, FileListing, FileTransfer, OperationLog,
-    QuickAction, Server, ServerInput, ServerMetrics, Snippet, SnippetInput, TerminalSession,
+    ActionResult, AuthMethod, BatchResult, ConnectionTest, FileListing, FileTransfer, OperationLog,
+    PortForwardInput, PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet,
+    SnippetInput, SshConfigImport, TerminalSession, TunnelStatus,
 };
 use crate::ssh;
+use crate::ssh_config;
 use crate::terminal::{self, TerminalCommand, TerminalRegistry};
+use crate::tunnel::TunnelRegistry;
 
 pub struct AppPaths {
     pub data_dir: PathBuf,
@@ -56,6 +59,85 @@ pub fn create_server(db: State<'_, Database>, input: ServerInput) -> CommandResu
 }
 
 #[tauri::command]
+pub fn import_ssh_config(db: State<'_, Database>, path: String) -> CommandResult<SshConfigImport> {
+    let content = std::fs::read_to_string(&path)
+        .map_err(AppError::from)
+        .map_err(CommandError::from)?;
+    let (entries, mut warnings) = ssh_config::parse(&content).map_err(CommandError::from)?;
+    let default_username = std::env::var("USER").unwrap_or_else(|_| "root".into());
+    let mut seen = db
+        .list_servers()
+        .map_err(CommandError::from)?
+        .into_iter()
+        .map(|server| (server.host, server.port, server.username))
+        .collect::<std::collections::HashSet<_>>();
+    let mut imported = Vec::new();
+    let mut skipped = 0;
+    for entry in entries {
+        let label = entry.alias.clone();
+        if let Some(reason) = entry.unsupported {
+            skipped += 1;
+            warnings.push(format!("已跳过 {label}：{reason}"));
+            continue;
+        }
+        let host = entry.hostname.unwrap_or_else(|| entry.alias.clone());
+        let username = entry.username.unwrap_or_else(|| default_username.clone());
+        let port = entry.port.unwrap_or(22);
+        if host.trim().is_empty() || username.trim().is_empty() {
+            skipped += 1;
+            warnings.push(format!("已跳过 {label}：主机或用户名为空"));
+            continue;
+        }
+        if !seen.insert((host.clone(), port, username.clone())) {
+            skipped += 1;
+            warnings.push(format!("已跳过 {label}：相同主机、端口和用户已存在"));
+            continue;
+        }
+        let auth_method = if entry.identity_file.is_some() {
+            AuthMethod::Key
+        } else {
+            AuthMethod::Agent
+        };
+        let input = ServerInput {
+            name: entry.alias,
+            host,
+            port,
+            username,
+            auth_method,
+            private_key_path: entry.identity_file,
+            password: None,
+            key_passphrase: None,
+            group_name: Some("SSH Config 导入".into()),
+            tags: vec!["ssh-config".into()],
+            provider: None,
+            region: None,
+            notes: None,
+            cost: None,
+            currency: None,
+            expires_at: None,
+        };
+        match db.create_server(&input) {
+            Ok(server) => {
+                if let Err(error) = ssh::save_credentials(&server, &input) {
+                    let _ = db.delete_server(&server.id);
+                    return Err(error.into());
+                }
+                imported.push(server);
+            }
+            Err(error) => {
+                skipped += 1;
+                warnings.push(format!("无法导入 {label}：{error}"));
+            }
+        }
+    }
+    Ok(SshConfigImport {
+        imported,
+        skipped,
+        warnings,
+    })
+}
+
+#[tauri::command]
 pub fn update_server(
     db: State<'_, Database>,
     id: String,
@@ -67,7 +149,12 @@ pub fn update_server(
 }
 
 #[tauri::command]
-pub fn delete_server(db: State<'_, Database>, id: String) -> CommandResult<()> {
+pub fn delete_server(
+    db: State<'_, Database>,
+    tunnels: State<'_, TunnelRegistry>,
+    id: String,
+) -> CommandResult<()> {
+    tunnels.stop_by_server(&id).map_err(CommandError::from)?;
     ssh::delete_credentials(&id).map_err(CommandError::from)?;
     db.delete_server(&id).map_err(Into::into)
 }
@@ -159,6 +246,75 @@ pub fn list_operation_logs(
 ) -> CommandResult<Vec<OperationLog>> {
     db.list_operation_logs(server_id.as_deref())
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_port_forwards(db: State<'_, Database>) -> CommandResult<Vec<PortForwardRule>> {
+    db.list_port_forwards().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_port_forward(
+    db: State<'_, Database>,
+    input: PortForwardInput,
+) -> CommandResult<PortForwardRule> {
+    db.create_port_forward(&input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_port_forward(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    db.delete_port_forward(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn start_port_forward(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    tunnels: State<'_, TunnelRegistry>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<TunnelStatus> {
+    let rule = db.get_port_forward(&id).map_err(CommandError::from)?;
+    let server = db.get_server(&rule.server_id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let registry = tunnels.inner().clone();
+    let server_id = rule.server_id.clone();
+    let result = run_blocking(move || {
+        registry.start(
+            &rule,
+            &server,
+            &credentials,
+            &known_hosts,
+            allow_unknown_host,
+        )
+    })
+    .await;
+    log_operation_result(&db, &server_id, "隧道启动", &result, |status| {
+        format!("本地监听 {}", status.local_endpoint)
+    });
+    result
+}
+
+#[tauri::command]
+pub fn stop_port_forward(
+    db: State<'_, Database>,
+    tunnels: State<'_, TunnelRegistry>,
+    id: String,
+) -> CommandResult<()> {
+    let rule = db.get_port_forward(&id).map_err(CommandError::from)?;
+    let result = tunnels.stop(&id).map_err(CommandError::from);
+    log_operation_result(&db, &rule.server_id, "隧道停止", &result, |_| {
+        format!("已停止 {}", rule.name)
+    });
+    result
+}
+
+#[tauri::command]
+pub fn list_tunnel_statuses(
+    tunnels: State<'_, TunnelRegistry>,
+) -> CommandResult<Vec<TunnelStatus>> {
+    tunnels.list().map_err(Into::into)
 }
 
 #[tauri::command]
@@ -329,7 +485,7 @@ pub async fn create_remote_directory(
         files::create_directory(&connection.session, &parent, &name)
     })
     .await;
-    log_file_operation(&db, &id, "文件新建目录", &result, |path| {
+    log_operation_result(&db, &id, "文件新建目录", &result, |path| {
         format!("已创建 {path}")
     });
     result
@@ -352,7 +508,7 @@ pub async fn rename_remote_file(
         files::rename(&connection.session, &path, &new_name)
     })
     .await;
-    log_file_operation(&db, &id, "文件重命名", &result, |path| {
+    log_operation_result(&db, &id, "文件重命名", &result, |path| {
         format!("新路径 {path}")
     });
     result
@@ -376,7 +532,7 @@ pub async fn delete_remote_file(
         files::delete(&connection.session, &path, recursive)
     })
     .await;
-    log_file_operation(&db, &id, "文件删除", &result, |_| {
+    log_operation_result(&db, &id, "文件删除", &result, |_| {
         format!("已删除 {summary_path}")
     });
     result
@@ -405,7 +561,7 @@ pub async fn upload_remote_file(
         )
     })
     .await;
-    log_file_operation(&db, &id, "文件上传", &result, |transfer| {
+    log_operation_result(&db, &id, "文件上传", &result, |transfer| {
         format!("已上传 {}，{} 字节", transfer.remote_path, transfer.bytes)
     });
     result
@@ -428,13 +584,13 @@ pub async fn download_remote_file(
         files::download(&connection.session, &remote_path, &local_path)
     })
     .await;
-    log_file_operation(&db, &id, "文件下载", &result, |transfer| {
+    log_operation_result(&db, &id, "文件下载", &result, |transfer| {
         format!("已下载 {}，{} 字节", transfer.remote_path, transfer.bytes)
     });
     result
 }
 
-fn log_file_operation<T>(
+fn log_operation_result<T>(
     db: &Database,
     server_id: &str,
     action: &str,

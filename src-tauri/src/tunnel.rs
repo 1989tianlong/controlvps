@@ -1,0 +1,262 @@
+use std::collections::HashMap;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use chrono::Utc;
+use ssh2::Session;
+
+use crate::error::{AppError, AppResult};
+use crate::models::{PortForwardRule, Server, TunnelStatus};
+use crate::ssh::{self, Credentials};
+
+struct TunnelHandle {
+    server_id: String,
+    local_endpoint: String,
+    stop: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
+    session: Arc<Mutex<Session>>,
+    active_connections: Arc<AtomicUsize>,
+    total_connections: Arc<AtomicU64>,
+    started_at: String,
+}
+
+#[derive(Clone, Default)]
+pub struct TunnelRegistry {
+    inner: Arc<Mutex<HashMap<String, TunnelHandle>>>,
+}
+
+impl TunnelRegistry {
+    pub fn start(
+        &self,
+        rule: &PortForwardRule,
+        server: &Server,
+        credentials: &Credentials,
+        known_hosts: &std::path::Path,
+        allow_unknown_host: bool,
+    ) -> AppResult<TunnelStatus> {
+        if self
+            .inner
+            .lock()
+            .map_err(|_| registry_error())?
+            .contains_key(&rule.id)
+        {
+            return Err(AppError::Message("这条隧道已经在运行".into()));
+        }
+        let connection = ssh::connect(server, credentials, known_hosts, allow_unknown_host)?;
+        connection.session.set_blocking(false);
+        let listener = TcpListener::bind((rule.listen_address.as_str(), rule.listen_port))?;
+        listener.set_nonblocking(true)?;
+        let local_endpoint = listener.local_addr()?.to_string();
+        let session = Arc::new(Mutex::new(connection.session));
+        let handle = TunnelHandle {
+            server_id: server.id.clone(),
+            local_endpoint,
+            stop: Arc::new(AtomicBool::new(false)),
+            finished: Arc::new(AtomicBool::new(false)),
+            session,
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            total_connections: Arc::new(AtomicU64::new(0)),
+            started_at: Utc::now().to_rfc3339(),
+        };
+        let status = status(&rule.id, &handle);
+        let stop = handle.stop.clone();
+        let finished = handle.finished.clone();
+        let session = handle.session.clone();
+        let active_connections = handle.active_connections.clone();
+        let total_connections = handle.total_connections.clone();
+        let mut registry = self.inner.lock().map_err(|_| registry_error())?;
+        if registry.contains_key(&rule.id) {
+            return Err(AppError::Message("这条隧道已经在运行".into()));
+        }
+        registry.insert(rule.id.clone(), handle);
+        drop(registry);
+
+        let registry = self.clone();
+        let rule = rule.clone();
+        std::thread::spawn(move || {
+            run_listener(
+                listener,
+                session,
+                &rule,
+                stop.clone(),
+                active_connections,
+                total_connections,
+            );
+            if let Ok(mut handles) = registry.inner.lock() {
+                let same_tunnel = handles
+                    .get(&rule.id)
+                    .is_some_and(|handle| Arc::ptr_eq(&handle.stop, &stop));
+                if same_tunnel {
+                    handles.remove(&rule.id);
+                }
+            }
+            finished.store(true, Ordering::Release);
+        });
+        Ok(status)
+    }
+
+    pub fn stop(&self, rule_id: &str) -> AppResult<()> {
+        let handle = self
+            .inner
+            .lock()
+            .map_err(|_| registry_error())?
+            .remove(rule_id);
+        let Some(handle) = handle else {
+            return Ok(());
+        };
+        handle.stop.store(true, Ordering::Release);
+        if let Ok(session) = handle.session.lock() {
+            let _ = session.disconnect(None, "ControlVPS tunnel stopped", None);
+        }
+        let _ = TcpStream::connect(&handle.local_endpoint);
+        for _ in 0..200 {
+            if handle.finished.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(AppError::Message("停止隧道超时，请重试".into()))
+    }
+
+    pub fn stop_by_server(&self, server_id: &str) -> AppResult<()> {
+        let ids = self
+            .inner
+            .lock()
+            .map_err(|_| registry_error())?
+            .iter()
+            .filter(|(_, handle)| handle.server_id == server_id)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.stop(&id)?;
+        }
+        Ok(())
+    }
+
+    pub fn list(&self) -> AppResult<Vec<TunnelStatus>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| registry_error())?
+            .iter()
+            .map(|(id, handle)| status(id, handle))
+            .collect())
+    }
+}
+
+fn run_listener(
+    listener: TcpListener,
+    session: Arc<Mutex<Session>>,
+    rule: &PortForwardRule,
+    stop: Arc<AtomicBool>,
+    active_connections: Arc<AtomicUsize>,
+    total_connections: Arc<AtomicU64>,
+) {
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let _ = stream.set_nodelay(true);
+                total_connections.fetch_add(1, Ordering::Relaxed);
+                active_connections.fetch_add(1, Ordering::Relaxed);
+                let session = session.clone();
+                let destination_host = rule.destination_host.clone();
+                let destination_port = rule.destination_port;
+                let active_connections = active_connections.clone();
+                std::thread::spawn(move || {
+                    handle_connection(stream, session, &destination_host, destination_port);
+                    active_connections.fetch_sub(1, Ordering::Relaxed);
+                });
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn handle_connection(
+    stream: TcpStream,
+    session: Arc<Mutex<Session>>,
+    destination_host: &str,
+    destination_port: u16,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let channel = loop {
+        let result = match session.lock() {
+            Ok(session) => session.channel_direct_tcpip(destination_host, destination_port, None),
+            Err(_) => return,
+        };
+        match result {
+            Ok(channel) => break channel,
+            Err(error) => {
+                if std::io::Error::from(error).kind() != ErrorKind::WouldBlock {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    };
+    let Ok(mut local_reader) = stream.try_clone() else {
+        return;
+    };
+    let mut local_writer = stream;
+    let mut remote_reader = channel.stream(0);
+    let mut remote_writer = channel.stream(0);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            pump(&mut local_reader, &mut remote_writer);
+        });
+        scope.spawn(|| {
+            pump(&mut remote_reader, &mut local_writer);
+            let _ = local_writer.shutdown(Shutdown::Both);
+        });
+    });
+}
+
+fn pump<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(_) => break,
+        };
+        let mut written = 0;
+        while written < count {
+            match writer.write(&buffer[written..count]) {
+                Ok(0) => return,
+                Ok(count) => written += count,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        }
+    }
+}
+
+fn status(id: &str, handle: &TunnelHandle) -> TunnelStatus {
+    TunnelStatus {
+        rule_id: id.to_string(),
+        server_id: handle.server_id.clone(),
+        local_endpoint: handle.local_endpoint.clone(),
+        active_connections: handle.active_connections.load(Ordering::Relaxed),
+        total_connections: handle.total_connections.load(Ordering::Relaxed),
+        started_at: handle.started_at.clone(),
+    }
+}
+
+fn registry_error() -> AppError {
+    AppError::Message("隧道注册表不可用".into())
+}

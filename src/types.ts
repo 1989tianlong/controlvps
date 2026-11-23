@@ -141,6 +141,36 @@ export interface BatchResult {
   durationMs: number;
 }
 
+export interface PortForwardInput {
+  name: string;
+  serverId: string;
+  listenAddress: string;
+  listenPort: number;
+  destinationHost: string;
+  destinationPort: number;
+}
+
+export interface PortForwardRule extends PortForwardInput {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TunnelStatus {
+  ruleId: string;
+  serverId: string;
+  localEndpoint: string;
+  activeConnections: number;
+  totalConnections: number;
+  startedAt: string;
+}
+
+export interface SshConfigImport {
+  imported: Server[];
+  skipped: number;
+  warnings: string[];
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;

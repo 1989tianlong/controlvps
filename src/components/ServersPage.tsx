@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Cable, FolderOpen, Pencil, Plus, RefreshCw, Search, Server as ServerIcon, TerminalSquare, Trash2 } from "lucide-react";
+import { Cable, FileInput, FolderOpen, Pencil, Plus, RefreshCw, Search, Server as ServerIcon, TerminalSquare, Trash2 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage } from "../lib/api";
 import type { Server, ServerMetrics, TrustedExecutor } from "../types";
 import { ServerDetail, type DetailTab } from "./ServerDetail";
@@ -68,6 +69,22 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
     }
   };
 
+  const importConfig = async () => {
+    setNotice("");
+    try {
+      const path = await openDialog({ title: "选择 SSH Config 文件", multiple: false, directory: false });
+      if (!path) return;
+      setBusy("import");
+      const result = await api.importSshConfig(path);
+      await onChanged();
+      setNotice(`已导入 ${result.imported.length} 台 VPS，跳过 ${result.skipped} 条。${result.warnings.length ? ` ${result.warnings.slice(0, 3).join("；")}` : ""}`);
+    } catch (reason) {
+      setNotice(errorMessage(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const remove = async (server: Server) => {
     if (!window.confirm(`确认删除 ${server.name}？本地配置和钥匙串凭据会被移除，远程服务器不受影响。`)) return;
     try {
@@ -84,7 +101,7 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
   };
 
   return <>
-    <div className="page-heading"><div><h1>我的 VPS</h1><p>连接、监控并操作你自己的服务器。</p></div><button className="btn btn-primary" type="button" onClick={onAdd}><Plus size={16} />添加 VPS</button></div>
+    <div className="page-heading"><div><h1>我的 VPS</h1><p>连接、监控并操作你自己的服务器。</p></div><div className="heading-actions"><button className="btn" type="button" disabled={busy !== null} onClick={() => void importConfig()}><FileInput size={16} />{busy === "import" ? "正在导入" : "导入 SSH Config"}</button><button className="btn btn-primary" type="button" onClick={onAdd}><Plus size={16} />添加 VPS</button></div></div>
     {notice && <div className="panel panel-body mb-6" role="status">{notice}</div>}
     <div className="filters">
       <div className="search-wrap"><Search size={16} /><input className="input" type="search" aria-label="搜索服务器" placeholder="搜索名称、地址或标签" value={query} onChange={(e) => setQuery(e.target.value)} /></div>

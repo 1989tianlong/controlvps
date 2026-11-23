@@ -8,13 +8,17 @@ import type {
   FileListing,
   FileTransfer,
   OperationLog,
+  PortForwardInput,
+  PortForwardRule,
   QuickAction,
   Server,
   ServerInput,
   ServerMetrics,
   Snippet,
   SnippetInput,
+  SshConfigImport,
   TerminalSession,
+  TunnelStatus,
 } from "../types";
 
 interface ErrorPayload {
@@ -38,10 +42,10 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (command === "list_servers" || command === "list_operation_logs" || command === "list_snippets") return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_port_forwards", "list_tunnel_statuses"].includes(command)) return [] as T;
     if (command === "get_app_info") {
       return {
-        version: "0.3.0",
+        version: "0.4.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -66,6 +70,7 @@ export const api = {
   appInfo: () => call<AppInfo>("get_app_info"),
   listServers: () => call<Server[]>("list_servers"),
   createServer: (input: ServerInput) => call<Server>("create_server", { input }),
+  importSshConfig: (path: string) => call<SshConfigImport>("import_ssh_config", { path }),
   updateServer: (id: string, input: ServerInput) => call<Server>("update_server", { id, input }),
   deleteServer: (id: string) => call<void>("delete_server", { id }),
   testConnection: (id: string, allowUnknownHost = false) =>
@@ -81,6 +86,13 @@ export const api = {
   deleteSnippet: (id: string) => call<void>("delete_snippet", { id }),
   runBatchCommand: (ids: string[], command: string, concurrency: number) =>
     call<BatchResult>("run_batch_command", { ids, command, concurrency }),
+  listPortForwards: () => call<PortForwardRule[]>("list_port_forwards"),
+  createPortForward: (input: PortForwardInput) => call<PortForwardRule>("create_port_forward", { input }),
+  deletePortForward: (id: string) => call<void>("delete_port_forward", { id }),
+  startPortForward: (id: string, allowUnknownHost = false) =>
+    call<TunnelStatus>("start_port_forward", { id, allowUnknownHost }),
+  stopPortForward: (id: string) => call<void>("stop_port_forward", { id }),
+  listTunnelStatuses: () => call<TunnelStatus[]>("list_tunnel_statuses"),
   openTerminal: (id: string, allowUnknownHost = false) =>
     call<TerminalSession>("open_terminal", { id, allowUnknownHost }),
   terminalInput: (terminalId: string, data: string) =>

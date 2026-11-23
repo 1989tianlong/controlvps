@@ -198,3 +198,47 @@ pub struct BatchResult {
     pub failure_count: usize,
     pub duration_ms: u64,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortForwardInput {
+    pub name: String,
+    pub server_id: String,
+    pub listen_address: String,
+    pub listen_port: u16,
+    pub destination_host: String,
+    pub destination_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortForwardRule {
+    pub id: String,
+    pub name: String,
+    pub server_id: String,
+    pub listen_address: String,
+    pub listen_port: u16,
+    pub destination_host: String,
+    pub destination_port: u16,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelStatus {
+    pub rule_id: String,
+    pub server_id: String,
+    pub local_endpoint: String,
+    pub active_connections: usize,
+    pub total_connections: u64,
+    pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConfigImport {
+    pub imported: Vec<Server>,
+    pub skipped: usize,
+    pub warnings: Vec<String>,
+}

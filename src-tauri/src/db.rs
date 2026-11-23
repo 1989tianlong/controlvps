@@ -5,7 +5,9 @@ use rusqlite::{params, Connection, Row};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::models::{OperationLog, Server, ServerInput, Snippet, SnippetInput};
+use crate::models::{
+    OperationLog, PortForwardInput, PortForwardRule, Server, ServerInput, Snippet, SnippetInput,
+};
 
 pub struct Database {
     connection: Mutex<Connection>,
@@ -56,6 +58,18 @@ impl Database {
                 command TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS port_forwards (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                server_id TEXT NOT NULL,
+                listen_address TEXT NOT NULL,
+                listen_port INTEGER NOT NULL,
+                destination_host TEXT NOT NULL,
+                destination_port INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
              );",
         )?;
         Ok(Self {
@@ -294,6 +308,90 @@ impl Database {
             .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    pub fn list_port_forwards(&self) -> AppResult<Vec<PortForwardRule>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, server_id, listen_address, listen_port, destination_host,
+                    destination_port, created_at, updated_at
+             FROM port_forwards ORDER BY name COLLATE NOCASE, created_at",
+        )?;
+        let rows = statement.query_map([], row_to_port_forward)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_port_forward(&self, id: &str) -> AppResult<PortForwardRule> {
+        self.connection()?
+            .query_row(
+                "SELECT id, name, server_id, listen_address, listen_port, destination_host,
+                        destination_port, created_at, updated_at
+                 FROM port_forwards WHERE id = ?1",
+                [id],
+                row_to_port_forward,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这条端口转发规则".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_port_forward(&self, input: &PortForwardInput) -> AppResult<PortForwardRule> {
+        validate_port_forward(input)?;
+        self.get_server(&input.server_id)?;
+        let rule = PortForwardRule {
+            id: Uuid::new_v4().to_string(),
+            name: input.name.trim().to_string(),
+            server_id: input.server_id.clone(),
+            listen_address: input.listen_address.trim().to_string(),
+            listen_port: input.listen_port,
+            destination_host: input.destination_host.trim().to_string(),
+            destination_port: input.destination_port,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        };
+        self.connection()?.execute(
+            "INSERT INTO port_forwards (
+                id, name, server_id, listen_address, listen_port, destination_host,
+                destination_port, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                rule.id,
+                rule.name,
+                rule.server_id,
+                rule.listen_address,
+                rule.listen_port,
+                rule.destination_host,
+                rule.destination_port,
+                rule.created_at,
+                rule.updated_at
+            ],
+        )?;
+        Ok(rule)
+    }
+
+    pub fn delete_port_forward(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM port_forwards WHERE id = ?1", [id])?;
+        Ok(())
+    }
+}
+
+fn validate_port_forward(input: &PortForwardInput) -> AppResult<()> {
+    if input.name.trim().is_empty() || input.destination_host.trim().is_empty() {
+        return Err(AppError::Message("规则名称和目标地址不能为空".into()));
+    }
+    if input.listen_port == 0 || input.destination_port == 0 {
+        return Err(AppError::Message(
+            "监听端口和目标端口必须在 1 到 65535 之间".into(),
+        ));
+    }
+    input
+        .listen_address
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| AppError::Message("监听地址必须是有效的 IP 地址，例如 127.0.0.1".into()))?;
+    Ok(())
 }
 
 fn validate_snippet(input: &SnippetInput) -> AppResult<()> {
@@ -358,6 +456,20 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
         updated_at: row.get(16)?,
         has_password: row.get(17)?,
         has_key_passphrase: row.get(18)?,
+    })
+}
+
+fn row_to_port_forward(row: &Row<'_>) -> rusqlite::Result<PortForwardRule> {
+    Ok(PortForwardRule {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        server_id: row.get(2)?,
+        listen_address: row.get(3)?,
+        listen_port: row.get(4)?,
+        destination_host: row.get(5)?,
+        destination_port: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 

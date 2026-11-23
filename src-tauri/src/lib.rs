@@ -6,12 +6,15 @@ mod files;
 mod metrics;
 mod models;
 mod ssh;
+mod ssh_config;
 mod terminal;
+mod tunnel;
 
 use commands::AppPaths;
 use db::Database;
 use tauri::Manager;
 use terminal::TerminalRegistry;
+use tunnel::TunnelRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(TerminalRegistry::default())
+        .manage(TunnelRegistry::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -34,6 +38,7 @@ pub fn run() {
             commands::get_app_info,
             commands::list_servers,
             commands::create_server,
+            commands::import_ssh_config,
             commands::update_server,
             commands::delete_server,
             commands::test_connection,
@@ -45,6 +50,12 @@ pub fn run() {
             commands::update_snippet,
             commands::delete_snippet,
             commands::run_batch_command,
+            commands::list_port_forwards,
+            commands::create_port_forward,
+            commands::delete_port_forward,
+            commands::start_port_forward,
+            commands::stop_port_forward,
+            commands::list_tunnel_statuses,
             commands::open_terminal,
             commands::terminal_input,
             commands::terminal_resize,
