@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod error;
+mod files;
 mod metrics;
 mod models;
 mod ssh;
@@ -15,6 +16,7 @@ use terminal::TerminalRegistry;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(TerminalRegistry::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -41,6 +43,12 @@ pub fn run() {
             commands::terminal_input,
             commands::terminal_resize,
             commands::terminal_close,
+            commands::list_remote_files,
+            commands::create_remote_directory,
+            commands::rename_remote_file,
+            commands::delete_remote_file,
+            commands::upload_remote_file,
+            commands::download_remote_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ControlVPS");

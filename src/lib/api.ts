@@ -4,6 +4,8 @@ import type {
   ActionResult,
   AppInfo,
   ConnectionTest,
+  FileListing,
+  FileTransfer,
   OperationLog,
   QuickAction,
   Server,
@@ -36,7 +38,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     if (command === "list_servers" || command === "list_operation_logs") return [] as T;
     if (command === "get_app_info") {
       return {
-        version: "0.1.0",
+        version: "0.2.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -77,6 +79,18 @@ export const api = {
   terminalResize: (terminalId: string, columns: number, rows: number) =>
     call<void>("terminal_resize", { terminalId, columns, rows }),
   terminalClose: (terminalId: string) => call<void>("terminal_close", { terminalId }),
+  listRemoteFiles: (id: string, path?: string, allowUnknownHost = false) =>
+    call<FileListing>("list_remote_files", { id, path, allowUnknownHost }),
+  createRemoteDirectory: (id: string, parent: string, name: string, allowUnknownHost = false) =>
+    call<string>("create_remote_directory", { id, parent, name, allowUnknownHost }),
+  renameRemoteFile: (id: string, path: string, newName: string, allowUnknownHost = false) =>
+    call<string>("rename_remote_file", { id, path, newName, allowUnknownHost }),
+  deleteRemoteFile: (id: string, path: string, recursive: boolean, allowUnknownHost = false) =>
+    call<void>("delete_remote_file", { id, path, recursive, allowUnknownHost }),
+  uploadRemoteFile: (id: string, localPath: string, remoteDirectory: string, fileName: string, allowUnknownHost = false) =>
+    call<FileTransfer>("upload_remote_file", { id, localPath, remoteDirectory, fileName, allowUnknownHost }),
+  downloadRemoteFile: (id: string, remotePath: string, localPath: string, allowUnknownHost = false) =>
+    call<FileTransfer>("download_remote_file", { id, remotePath, localPath, allowUnknownHost }),
 };
 
 export async function openExternal(url: string) {

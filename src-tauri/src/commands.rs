@@ -6,10 +6,11 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult, CommandError, CommandResult};
+use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, ConnectionTest, OperationLog, QuickAction, Server, ServerInput, ServerMetrics,
-    TerminalSession,
+    ActionResult, ConnectionTest, FileListing, FileTransfer, OperationLog, QuickAction, Server,
+    ServerInput, ServerMetrics, TerminalSession,
 };
 use crate::ssh;
 use crate::terminal::{self, TerminalCommand, TerminalRegistry};
@@ -215,6 +216,160 @@ pub fn terminal_close(
     registry
         .send(&terminal_id, TerminalCommand::Close)
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn list_remote_files(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    path: Option<String>,
+    allow_unknown_host: bool,
+) -> CommandResult<FileListing> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        files::list(&connection.session, path.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn create_remote_directory(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    parent: String,
+    name: String,
+    allow_unknown_host: bool,
+) -> CommandResult<String> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        files::create_directory(&connection.session, &parent, &name)
+    })
+    .await;
+    log_file_operation(&db, &id, "文件新建目录", &result, |path| {
+        format!("已创建 {path}")
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn rename_remote_file(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    path: String,
+    new_name: String,
+    allow_unknown_host: bool,
+) -> CommandResult<String> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        files::rename(&connection.session, &path, &new_name)
+    })
+    .await;
+    log_file_operation(&db, &id, "文件重命名", &result, |path| {
+        format!("新路径 {path}")
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn delete_remote_file(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    path: String,
+    recursive: bool,
+    allow_unknown_host: bool,
+) -> CommandResult<()> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let summary_path = path.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        files::delete(&connection.session, &path, recursive)
+    })
+    .await;
+    log_file_operation(&db, &id, "文件删除", &result, |_| {
+        format!("已删除 {summary_path}")
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn upload_remote_file(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    local_path: String,
+    remote_directory: String,
+    file_name: String,
+    allow_unknown_host: bool,
+) -> CommandResult<FileTransfer> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        files::upload(
+            &connection.session,
+            &local_path,
+            &remote_directory,
+            &file_name,
+        )
+    })
+    .await;
+    log_file_operation(&db, &id, "文件上传", &result, |transfer| {
+        format!("已上传 {}，{} 字节", transfer.remote_path, transfer.bytes)
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn download_remote_file(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    remote_path: String,
+    local_path: String,
+    allow_unknown_host: bool,
+) -> CommandResult<FileTransfer> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        files::download(&connection.session, &remote_path, &local_path)
+    })
+    .await;
+    log_file_operation(&db, &id, "文件下载", &result, |transfer| {
+        format!("已下载 {}，{} 字节", transfer.remote_path, transfer.bytes)
+    });
+    result
+}
+
+fn log_file_operation<T>(
+    db: &Database,
+    server_id: &str,
+    action: &str,
+    result: &CommandResult<T>,
+    success_summary: impl FnOnce(&T) -> String,
+) {
+    let (success, summary) = match result {
+        Ok(value) => (true, success_summary(value)),
+        Err(error) => (false, error.message.clone()),
+    };
+    let _ = db.log_operation(server_id, action, success, &summary);
 }
 
 fn quick_action_command(action: QuickAction) -> &'static str {

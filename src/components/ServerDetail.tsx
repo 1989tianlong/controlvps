@@ -3,10 +3,11 @@ import { Activity, Clock3, HardDrive, List, Power, RefreshCw, ScrollText, Server
 import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime, formatUptime, percent } from "../lib/format";
 import type { ActionResult, QuickAction, Server, ServerMetrics, TrustedExecutor } from "../types";
+import { FileManager } from "./FileManager";
 
 const TerminalView = lazy(() => import("./TerminalView").then((module) => ({ default: module.TerminalView })));
 
-export type DetailTab = "overview" | "terminal" | "actions";
+export type DetailTab = "overview" | "terminal" | "files" | "actions";
 
 interface Props {
   server: Server;
@@ -29,10 +30,12 @@ export function ServerDetail({ server, metrics, metricsError, tab, onTabChange, 
       <div className="tabs" role="tablist" aria-label="服务器工作区">
         <button className="tab" type="button" role="tab" aria-selected={tab === "overview"} onClick={() => onTabChange("overview")}>概览</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "terminal"} onClick={() => onTabChange("terminal")}>SSH 终端</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "files"} onClick={() => onTabChange("files")}>文件管理</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "actions"} onClick={() => onTabChange("actions")}>快捷运维</button>
       </div>
       {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
       {tab === "terminal" && <Suspense fallback={<div className="terminal-empty">正在加载终端组件</div>}><TerminalView server={server} trusted={trusted} /></Suspense>}
+      {tab === "files" && <FileManager server={server} trusted={trusted} />}
       {tab === "actions" && <QuickActions server={server} trusted={trusted} />}
     </section>
   );

@@ -121,3 +121,39 @@ pub struct TerminalSession {
     pub terminal_id: String,
     pub fingerprint: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteFileKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFileEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: RemoteFileKind,
+    pub size: u64,
+    pub modified_at: Option<String>,
+    pub permissions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub entries: Vec<RemoteFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTransfer {
+    pub bytes: u64,
+    pub local_path: String,
+    pub remote_path: String,
+}

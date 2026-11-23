@@ -88,6 +88,29 @@ export interface TerminalSession {
   fingerprint: string;
 }
 
+export type RemoteFileKind = "file" | "directory" | "symlink" | "other";
+
+export interface RemoteFileEntry {
+  name: string;
+  path: string;
+  kind: RemoteFileKind;
+  size: number;
+  modifiedAt?: string;
+  permissions?: string;
+}
+
+export interface FileListing {
+  path: string;
+  parent?: string;
+  entries: RemoteFileEntry[];
+}
+
+export interface FileTransfer {
+  bytes: number;
+  localPath: string;
+  remotePath: string;
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;
