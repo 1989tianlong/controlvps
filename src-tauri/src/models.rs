@@ -157,3 +157,44 @@ pub struct FileTransfer {
     pub local_path: String,
     pub remote_path: String,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnippetInput {
+    pub name: String,
+    pub description: Option<String>,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub command: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExecutionResult {
+    pub server_id: String,
+    pub server_name: String,
+    pub command: String,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResult {
+    pub results: Vec<BatchExecutionResult>,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub duration_ms: u64,
+}

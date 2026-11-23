@@ -1,3 +1,4 @@
+mod batch;
 mod commands;
 mod db;
 mod error;
@@ -39,6 +40,11 @@ pub fn run() {
             commands::collect_metrics,
             commands::run_quick_action,
             commands::list_operation_logs,
+            commands::list_snippets,
+            commands::create_snippet,
+            commands::update_snippet,
+            commands::delete_snippet,
+            commands::run_batch_command,
             commands::open_terminal,
             commands::terminal_input,
             commands::terminal_resize,

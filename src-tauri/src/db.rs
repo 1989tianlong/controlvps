@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, Row};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::models::{OperationLog, Server, ServerInput};
+use crate::models::{OperationLog, Server, ServerInput, Snippet, SnippetInput};
 
 pub struct Database {
     connection: Mutex<Connection>,
@@ -48,7 +48,15 @@ impl Database {
                 FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
              );
              CREATE INDEX IF NOT EXISTS idx_operation_logs_server
-             ON operation_logs(server_id, id DESC);",
+             ON operation_logs(server_id, id DESC);
+             CREATE TABLE IF NOT EXISTS snippets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                command TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+             );",
         )?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -214,6 +222,88 @@ impl Database {
         }
         Ok(logs)
     }
+
+    pub fn list_snippets(&self) -> AppResult<Vec<Snippet>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, description, command, created_at, updated_at
+             FROM snippets ORDER BY name COLLATE NOCASE, created_at",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Snippet {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                command: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn create_snippet(&self, input: &SnippetInput) -> AppResult<Snippet> {
+        validate_snippet(input)?;
+        let snippet = Snippet {
+            id: Uuid::new_v4().to_string(),
+            name: input.name.trim().to_string(),
+            description: clean(input.description.as_deref()),
+            command: input.command.clone(),
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        };
+        self.connection()?.execute(
+            "INSERT INTO snippets (id, name, description, command, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                snippet.id,
+                snippet.name,
+                snippet.description,
+                snippet.command,
+                snippet.created_at,
+                snippet.updated_at
+            ],
+        )?;
+        Ok(snippet)
+    }
+
+    pub fn update_snippet(&self, id: &str, input: &SnippetInput) -> AppResult<Snippet> {
+        validate_snippet(input)?;
+        let changed = self.connection()?.execute(
+            "UPDATE snippets SET name = ?2, description = ?3, command = ?4, updated_at = ?5
+             WHERE id = ?1",
+            params![
+                id,
+                input.name.trim(),
+                clean(input.description.as_deref()),
+                input.command,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Message("未找到这个命令片段".into()));
+        }
+        self.list_snippets()?
+            .into_iter()
+            .find(|snippet| snippet.id == id)
+            .ok_or_else(|| AppError::Message("未找到这个命令片段".into()))
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
+        Ok(())
+    }
+}
+
+fn validate_snippet(input: &SnippetInput) -> AppResult<()> {
+    if input.name.trim().is_empty() || input.command.trim().is_empty() {
+        return Err(AppError::Message("片段名称和命令不能为空".into()));
+    }
+    if input.name.chars().count() > 120 || input.command.len() > 100_000 {
+        return Err(AppError::Message("片段名称或命令内容过长".into()));
+    }
+    Ok(())
 }
 
 fn validate_server(input: &ServerInput) -> AppResult<()> {

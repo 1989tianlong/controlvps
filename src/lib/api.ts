@@ -3,6 +3,7 @@ import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import type {
   ActionResult,
   AppInfo,
+  BatchResult,
   ConnectionTest,
   FileListing,
   FileTransfer,
@@ -11,6 +12,8 @@ import type {
   Server,
   ServerInput,
   ServerMetrics,
+  Snippet,
+  SnippetInput,
   TerminalSession,
 } from "../types";
 
@@ -35,10 +38,10 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (command === "list_servers" || command === "list_operation_logs") return [] as T;
+    if (command === "list_servers" || command === "list_operation_logs" || command === "list_snippets") return [] as T;
     if (command === "get_app_info") {
       return {
-        version: "0.2.0",
+        version: "0.3.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -72,6 +75,12 @@ export const api = {
   quickAction: (id: string, action: QuickAction, allowUnknownHost = false) =>
     call<ActionResult>("run_quick_action", { id, action, allowUnknownHost }),
   operationLogs: (serverId?: string) => call<OperationLog[]>("list_operation_logs", { serverId }),
+  listSnippets: () => call<Snippet[]>("list_snippets"),
+  createSnippet: (input: SnippetInput) => call<Snippet>("create_snippet", { input }),
+  updateSnippet: (id: string, input: SnippetInput) => call<Snippet>("update_snippet", { id, input }),
+  deleteSnippet: (id: string) => call<void>("delete_snippet", { id }),
+  runBatchCommand: (ids: string[], command: string, concurrency: number) =>
+    call<BatchResult>("run_batch_command", { ids, command, concurrency }),
   openTerminal: (id: string, allowUnknownHost = false) =>
     call<TerminalSession>("open_terminal", { id, allowUnknownHost }),
   terminalInput: (terminalId: string, data: string) =>

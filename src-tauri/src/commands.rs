@@ -4,13 +4,14 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::batch;
 use crate::db::Database;
 use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, ConnectionTest, FileListing, FileTransfer, OperationLog, QuickAction, Server,
-    ServerInput, ServerMetrics, TerminalSession,
+    ActionResult, BatchResult, ConnectionTest, FileListing, FileTransfer, OperationLog,
+    QuickAction, Server, ServerInput, ServerMetrics, Snippet, SnippetInput, TerminalSession,
 };
 use crate::ssh;
 use crate::terminal::{self, TerminalCommand, TerminalRegistry};
@@ -158,6 +159,81 @@ pub fn list_operation_logs(
 ) -> CommandResult<Vec<OperationLog>> {
     db.list_operation_logs(server_id.as_deref())
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_snippets(db: State<'_, Database>) -> CommandResult<Vec<Snippet>> {
+    db.list_snippets().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_snippet(db: State<'_, Database>, input: SnippetInput) -> CommandResult<Snippet> {
+    db.create_snippet(&input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_snippet(
+    db: State<'_, Database>,
+    id: String,
+    input: SnippetInput,
+) -> CommandResult<Snippet> {
+    db.update_snippet(&id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_snippet(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    db.delete_snippet(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn run_batch_command(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    ids: Vec<String>,
+    command: String,
+    concurrency: usize,
+) -> CommandResult<BatchResult> {
+    if ids.is_empty() || ids.len() > 50 {
+        return Err(CommandError::from(AppError::Message(
+            "每次批量执行需要选择 1 到 50 台服务器".into(),
+        )));
+    }
+    if command.trim().is_empty() || command.len() > 100_000 {
+        return Err(CommandError::from(AppError::Message(
+            "批量命令不能为空且不能超过 100000 字节".into(),
+        )));
+    }
+    if !(1..=10).contains(&concurrency) {
+        return Err(CommandError::from(AppError::Message(
+            "并发数必须在 1 到 10 之间".into(),
+        )));
+    }
+    let mut unique_ids = Vec::new();
+    for id in ids {
+        if !unique_ids.contains(&id) {
+            unique_ids.push(id);
+        }
+    }
+    let mut jobs = Vec::with_capacity(unique_ids.len());
+    for id in unique_ids {
+        let server = db.get_server(&id).map_err(CommandError::from)?;
+        let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+        jobs.push(batch::BatchJob {
+            server,
+            credentials,
+        });
+    }
+    let known_hosts = paths.known_hosts.clone();
+    let result =
+        run_blocking(move || batch::execute(jobs, command, known_hosts, concurrency)).await?;
+    for item in &result.results {
+        let summary = match item.exit_code {
+            Some(code) => format!("命令退出码 {code}，耗时 {} ms", item.duration_ms),
+            None => item.error.clone().unwrap_or_else(|| "连接失败".into()),
+        };
+        let _ = db.log_operation(&item.server_id, "批量命令", item.success, &summary);
+    }
+    Ok(result)
 }
 
 #[tauri::command]

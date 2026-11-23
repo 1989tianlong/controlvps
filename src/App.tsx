@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Compass, Gift, LayoutDashboard, LockKeyhole, Menu, Plus, ScrollText, Server as ServerIcon, Settings, TerminalSquare, X } from "lucide-react";
+import { Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Plus, ScrollText, Server as ServerIcon, Settings, TerminalSquare, X } from "lucide-react";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
 import type { Server, ServerMetrics } from "./types";
@@ -10,10 +10,12 @@ import { DiscoveryPage } from "./components/DiscoveryPage";
 import { FreePage } from "./components/FreePage";
 import { ActivityPage } from "./components/ActivityPage";
 import { SettingsPage } from "./components/SettingsPage";
+import { AutomationPage } from "./components/AutomationPage";
 
 const pages = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
   { id: "servers", label: "我的 VPS", icon: ServerIcon },
+  { id: "automation", label: "批量运维", icon: ListChecks },
   { id: "discover", label: "发现 VPS", icon: Compass },
   { id: "free", label: "免费渠道", icon: Gift },
   { id: "activity", label: "操作记录", icon: ScrollText },
@@ -80,6 +82,7 @@ export default function App() {
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
         {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={(id, value) => setMetrics((current) => ({ ...current, [id]: value }))} onAdd={add} onEdit={edit} onChanged={loadServers} trusted={execute} />}
+        {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} />}
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}

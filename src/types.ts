@@ -111,6 +111,36 @@ export interface FileTransfer {
   remotePath: string;
 }
 
+export interface SnippetInput {
+  name: string;
+  description?: string;
+  command: string;
+}
+
+export interface Snippet extends SnippetInput {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BatchExecutionResult {
+  serverId: string;
+  serverName: string;
+  command: string;
+  output: string;
+  exitCode: number | null;
+  success: boolean;
+  error?: string;
+  durationMs: number;
+}
+
+export interface BatchResult {
+  results: BatchExecutionResult[];
+  successCount: number;
+  failureCount: number;
+  durationMs: number;
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;

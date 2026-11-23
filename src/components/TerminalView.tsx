@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
@@ -15,6 +15,7 @@ interface Props {
 export function TerminalView({ server, trusted }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const sessionRef = useRef<TerminalSession | null>(null);
   const [status, setStatus] = useState("正在建立 SSH 会话");
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -73,6 +74,7 @@ export function TerminalView({ server, trusted }: Props) {
           return;
         }
         session = opened;
+        sessionRef.current = opened;
         setStatus(`已连接 ${server.host}`);
         unlistenOutput = await listen<string>(`terminal-output-${opened.terminalId}`, (event) => terminal.write(event.payload));
         unlistenExit = await listen<string>(`terminal-exit-${opened.terminalId}`, (event) => {
@@ -96,10 +98,23 @@ export function TerminalView({ server, trusted }: Props) {
       unlistenOutput?.();
       unlistenExit?.();
       if (session) void api.terminalClose(session.terminalId).catch(() => undefined);
+      sessionRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
     };
   }, [server, trusted, attempt]);
+
+  const guardPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const text = event.clipboardData.getData("text");
+    if (!/[\r\n]/.test(text)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const terminalId = sessionRef.current?.terminalId;
+    if (!terminalId) return;
+    const lines = text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length;
+    if (!window.confirm(`剪贴板包含 ${lines} 行内容。粘贴到 ${server.name} 可能会立即执行多条命令，确认继续？`)) return;
+    void api.terminalInput(terminalId, text).catch((reason) => setError(errorMessage(reason)));
+  };
 
   return (
     <div>
@@ -111,7 +126,7 @@ export function TerminalView({ server, trusted }: Props) {
         </div>
       </div>
       {error && <div className="error-banner m-4" role="alert">{error}</div>}
-      <div ref={containerRef} className="terminal-shell" aria-label={`${server.name} SSH 终端`} />
+      <div ref={containerRef} className="terminal-shell" aria-label={`${server.name} SSH 终端`} onPasteCapture={guardPaste} />
     </div>
   );
 }
