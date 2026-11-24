@@ -130,6 +130,26 @@ export interface FileTransfer {
   remotePath: string;
 }
 
+export type FileTransferStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface FileTransferTask {
+  id: string;
+  serverId: string;
+  serverName: string;
+  kind: "upload" | "download";
+  status: FileTransferStatus;
+  fileName: string;
+  localPath: string;
+  remotePath: string;
+  totalBytes: number;
+  transferredBytes: number;
+  bytesPerSecond: number;
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
 export interface SnippetInput {
   name: string;
   description?: string;
@@ -160,7 +180,7 @@ export interface BatchResult {
   durationMs: number;
 }
 
-export type PortForwardKind = "local" | "dynamic";
+export type PortForwardKind = "local" | "remote" | "dynamic";
 
 export interface PortForwardInput {
   name: string;
@@ -200,11 +220,20 @@ export interface DockerContainer {
   state: string;
   status: string;
   ports: string;
+  services: DockerService[];
   createdAt: string;
   cpuPercent?: number;
   memoryPercent?: number;
   memoryUsage?: string;
   pids?: number;
+}
+
+export interface DockerService {
+  containerId: string;
+  containerName: string;
+  hostPort: number;
+  containerPort: number;
+  protocol: string;
 }
 
 export interface DockerOverview {

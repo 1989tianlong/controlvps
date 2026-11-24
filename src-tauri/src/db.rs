@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use rusqlite::{params, Connection, Row};
@@ -9,8 +9,9 @@ use crate::models::{
     OperationLog, PortForwardInput, PortForwardRule, Server, ServerInput, Snippet, SnippetInput,
 };
 
+#[derive(Clone)]
 pub struct Database {
-    connection: Mutex<Connection>,
+    connection: Arc<Mutex<Connection>>,
 }
 
 impl Database {
@@ -94,7 +95,7 @@ impl Database {
             connection.execute("ALTER TABLE servers ADD COLUMN jump_server_id TEXT", [])?;
         }
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
         })
     }
 
@@ -426,16 +427,14 @@ fn validate_port_forward(input: &PortForwardInput) -> AppResult<()> {
     if input.name.trim().is_empty() {
         return Err(AppError::Message("规则名称不能为空".into()));
     }
-    if input.kind == crate::models::PortForwardKind::Local
+    if input.kind != crate::models::PortForwardKind::Dynamic
         && input.destination_host.trim().is_empty()
     {
-        return Err(AppError::Message("本地转发的目标地址不能为空".into()));
+        return Err(AppError::Message("固定转发的目标地址不能为空".into()));
     }
-    if input.listen_port == 0
-        || (input.kind == crate::models::PortForwardKind::Local && input.destination_port == 0)
-    {
+    if input.kind != crate::models::PortForwardKind::Dynamic && input.destination_port == 0 {
         return Err(AppError::Message(
-            "监听端口必须在 1 到 65535 之间，本地转发还需要有效的目标端口".into(),
+            "目标端口必须在 1 到 65535 之间；监听端口可填 0 自动分配".into(),
         ));
     }
     input
@@ -517,6 +516,7 @@ fn clean(value: Option<&str>) -> Option<String> {
 fn forward_kind(kind: crate::models::PortForwardKind) -> &'static str {
     match kind {
         crate::models::PortForwardKind::Local => "local",
+        crate::models::PortForwardKind::Remote => "remote",
         crate::models::PortForwardKind::Dynamic => "dynamic",
     }
 }

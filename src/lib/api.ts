@@ -12,6 +12,7 @@ import type {
   DockerOverview,
   FileListing,
   FileTransfer,
+  FileTransferTask,
   OperationLog,
   PortForwardInput,
   PortForwardRule,
@@ -138,6 +139,14 @@ export const api = {
     call<FileTransfer>("upload_remote_file", { id, localPath, remoteDirectory, fileName, allowUnknownHost }),
   downloadRemoteFile: (id: string, remotePath: string, localPath: string, allowUnknownHost = false) =>
     call<FileTransfer>("download_remote_file", { id, remotePath, localPath, allowUnknownHost }),
+  enqueueFileUpload: (id: string, localPath: string, remoteDirectory: string, fileName: string, allowUnknownHost = false) =>
+    call<FileTransferTask>("enqueue_file_upload", { id, localPath, remoteDirectory, fileName, allowUnknownHost }),
+  enqueueFileDownload: (id: string, remotePath: string, localPath: string, allowUnknownHost = false) =>
+    call<FileTransferTask>("enqueue_file_download", { id, remotePath, localPath, allowUnknownHost }),
+  listFileTransfers: () => call<FileTransferTask[]>("list_file_transfers"),
+  cancelFileTransfer: (id: string) => call<FileTransferTask>("cancel_file_transfer", { id }),
+  retryFileTransfer: (id: string) => call<FileTransferTask>("retry_file_transfer", { id }),
+  clearFinishedFileTransfers: (serverId: string) => call<void>("clear_finished_file_transfers", { serverId }),
 };
 
 export async function openExternal(url: string) {

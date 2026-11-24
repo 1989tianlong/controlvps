@@ -140,6 +140,23 @@
   .file-empty p { margin-top: var(--space-sm); }
   .file-skeleton { min-height: 18rem; border-radius: 0; }
   .file-progress { padding: var(--space-sm) var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule); color: var(--color-cool); font-size: var(--text-sm); }
+  .transfer-queue { border-top: var(--rule-hair) solid var(--color-rule); padding: var(--space-lg); }
+  .transfer-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-md); }
+  .transfer-heading h3 { font-size: var(--text-base); }
+  .transfer-heading p { margin-top: var(--space-2xs); color: var(--color-muted); font-size: var(--text-sm); }
+  .transfer-empty { margin-top: var(--space-md); color: var(--color-muted); font-size: var(--text-sm); }
+  .transfer-list { display: grid; gap: var(--space-sm); margin-top: var(--space-md); }
+  .transfer-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--space-sm); padding: var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); }
+  .transfer-icon { margin-top: var(--space-2xs); color: var(--color-cool); }
+  .transfer-content { min-width: 0; }
+  .transfer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); }
+  .transfer-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .transfer-meta { display: flex; justify-content: space-between; gap: var(--space-md); margin-top: var(--space-2xs); color: var(--color-muted); font-size: var(--text-xs); }
+  .transfer-meta span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .transfer-meta span:last-child { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .transfer-progress { height: 4px; margin-top: var(--space-sm); overflow: hidden; border-radius: 2px; background: var(--color-paper-3); }
+  .transfer-progress span { display: block; height: 100%; background: var(--color-cool); transition: width 180ms ease; }
+  .transfer-error { margin-top: var(--space-xs); color: var(--color-bad); font-size: var(--text-xs); overflow-wrap: anywhere; }
   .file-dialog { width: min(32rem, calc(100% - var(--space-xl))); }
   .automation-layout { display: grid; grid-template-columns: 18rem minmax(0, 1fr); align-items: start; gap: var(--space-lg); }
   .automation-main { display: grid; gap: var(--space-lg); min-width: 0; }
@@ -201,6 +218,13 @@
   .docker-notice { margin-bottom: 0; }
   .docker-no-match { display: grid; place-items: center; min-height: 12rem; color: var(--color-muted); }
   .docker-no-match svg { margin-inline: auto; margin-bottom: var(--space-sm); }
+  .docker-services { padding: var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule); }
+  .docker-services .section-heading h3 { font-size: var(--text-base); }
+  .docker-service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: var(--space-sm); margin-top: var(--space-md); }
+  .docker-service { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); }
+  .docker-service > div { min-width: 0; }
+  .docker-service strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .docker-service .btn { flex-shrink: 0; }
   .docker-logs { border-top: var(--rule-hair) solid var(--color-rule); }
   .docker-log-output { margin: var(--space-lg); max-height: 26rem; }
   .diagnostic-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-lg); }

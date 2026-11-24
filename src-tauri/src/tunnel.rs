@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use crate::ssh::{self, Credentials, JumpHost, SshConnection};
 
 struct TunnelHandle {
     server_id: String,
+    kind: PortForwardKind,
     local_endpoint: String,
     stop: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
@@ -52,13 +53,37 @@ impl TunnelRegistry {
             known_hosts,
             allow_unknown_host,
         )?;
+        let (local_endpoint, local_listener, remote_listener) = match rule.kind {
+            PortForwardKind::Remote => {
+                let (listener, bound_port) = connection
+                    .session
+                    .channel_forward_listen(
+                        rule.listen_port,
+                        Some(rule.listen_address.as_str()),
+                        Some(16),
+                    )
+                    .map_err(|error| {
+                        AppError::Message(format!(
+                            "VPS 无法监听远程端口，请检查 AllowTcpForwarding、GatewayPorts 和端口占用：{error}"
+                        ))
+                    })?;
+                (
+                    format_endpoint(&rule.listen_address, bound_port),
+                    None,
+                    Some(listener),
+                )
+            }
+            PortForwardKind::Local | PortForwardKind::Dynamic => {
+                let listener = TcpListener::bind((rule.listen_address.as_str(), rule.listen_port))?;
+                listener.set_nonblocking(true)?;
+                (listener.local_addr()?.to_string(), Some(listener), None)
+            }
+        };
         connection.session.set_blocking(false);
-        let listener = TcpListener::bind((rule.listen_address.as_str(), rule.listen_port))?;
-        listener.set_nonblocking(true)?;
-        let local_endpoint = listener.local_addr()?.to_string();
         let session = Arc::new(Mutex::new(connection));
         let handle = TunnelHandle {
             server_id: server.id.clone(),
+            kind: rule.kind,
             local_endpoint,
             stop: Arc::new(AtomicBool::new(false)),
             finished: Arc::new(AtomicBool::new(false)),
@@ -83,14 +108,25 @@ impl TunnelRegistry {
         let registry = self.clone();
         let rule = rule.clone();
         std::thread::spawn(move || {
-            run_listener(
-                listener,
-                session,
-                &rule,
-                stop.clone(),
-                active_connections,
-                total_connections,
-            );
+            if let Some(listener) = local_listener {
+                run_listener(
+                    listener,
+                    session,
+                    &rule,
+                    stop.clone(),
+                    active_connections,
+                    total_connections,
+                );
+            } else if let Some(listener) = remote_listener {
+                run_remote_listener(
+                    listener,
+                    session,
+                    &rule,
+                    stop.clone(),
+                    active_connections,
+                    total_connections,
+                );
+            }
             if let Ok(mut handles) = registry.inner.lock() {
                 let same_tunnel = handles
                     .get(&rule.id)
@@ -117,7 +153,9 @@ impl TunnelRegistry {
         if let Ok(connection) = handle.session.lock() {
             connection.disconnect();
         }
-        let _ = TcpStream::connect(&handle.local_endpoint);
+        if handle.kind != PortForwardKind::Remote {
+            let _ = TcpStream::connect(&handle.local_endpoint);
+        }
         for _ in 0..200 {
             if handle.finished.load(Ordering::Acquire) {
                 return Ok(());
@@ -186,6 +224,7 @@ fn run_listener(
                             handle_connection(stream, session, &destination_host, destination_port)
                         }
                         PortForwardKind::Dynamic => handle_socks5_connection(stream, session),
+                        PortForwardKind::Remote => {}
                     }
                     active_connections.fetch_sub(1, Ordering::Relaxed);
                 });
@@ -196,6 +235,62 @@ fn run_listener(
             Err(_) => break,
         }
     }
+}
+
+fn run_remote_listener(
+    mut listener: ssh2::Listener,
+    session: Arc<Mutex<SshConnection>>,
+    rule: &PortForwardRule,
+    stop: Arc<AtomicBool>,
+    active_connections: Arc<AtomicUsize>,
+    total_connections: Arc<AtomicU64>,
+) {
+    let mut last_keepalive = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        if last_keepalive.elapsed() >= Duration::from_secs(5) {
+            if let Ok(connection) = session.lock() {
+                let _ = connection.send_keepalive();
+            }
+            last_keepalive = Instant::now();
+        }
+        match listener.accept() {
+            Ok(channel) => {
+                total_connections.fetch_add(1, Ordering::Relaxed);
+                active_connections.fetch_add(1, Ordering::Relaxed);
+                let destination_host = rule.destination_host.clone();
+                let destination_port = rule.destination_port;
+                let active_connections = active_connections.clone();
+                std::thread::spawn(move || {
+                    handle_remote_connection(channel, &destination_host, destination_port);
+                    active_connections.fetch_sub(1, Ordering::Relaxed);
+                });
+            }
+            Err(error) => {
+                let error = std::io::Error::from(error);
+                if error.kind() == ErrorKind::WouldBlock {
+                    std::thread::sleep(Duration::from_millis(100));
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn handle_remote_connection(channel: ssh2::Channel, destination_host: &str, destination_port: u16) {
+    let Some(address) = (destination_host, destination_port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addresses| addresses.next())
+    else {
+        return;
+    };
+    let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(10)) else {
+        return;
+    };
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_nonblocking(true);
+    relay(stream, channel);
 }
 
 fn handle_connection(
@@ -392,6 +487,14 @@ fn pump<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
                 Err(_) => return,
             }
         }
+    }
+}
+
+fn format_endpoint(address: &str, port: u16) -> String {
+    if address.contains(':') {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
     }
 }
 

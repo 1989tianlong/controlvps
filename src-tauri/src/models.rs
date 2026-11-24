@@ -182,6 +182,43 @@ pub struct FileTransfer {
     pub remote_path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileTransferKind {
+    Upload,
+    Download,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileTransferStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTransferTask {
+    pub id: String,
+    pub server_id: String,
+    pub server_name: String,
+    pub kind: FileTransferKind,
+    pub status: FileTransferStatus,
+    pub file_name: String,
+    pub local_path: String,
+    pub remote_path: String,
+    pub total_bytes: u64,
+    pub transferred_bytes: u64,
+    pub bytes_per_second: u64,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnippetInput {
@@ -227,6 +264,7 @@ pub struct BatchResult {
 #[serde(rename_all = "lowercase")]
 pub enum PortForwardKind {
     Local,
+    Remote,
     Dynamic,
 }
 
@@ -285,11 +323,22 @@ pub struct DockerContainer {
     pub state: String,
     pub status: String,
     pub ports: String,
+    pub services: Vec<DockerService>,
     pub created_at: String,
     pub cpu_percent: Option<f64>,
     pub memory_percent: Option<f64>,
     pub memory_usage: Option<String>,
     pub pids: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerService {
+    pub container_id: String,
+    pub container_name: String,
+    pub host_port: u16,
+    pub container_port: u16,
+    pub protocol: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -4,6 +4,7 @@ import { ArrowUp, Download, File, FileQuestion, Folder, FolderOpen, FolderPlus, 
 import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime } from "../lib/format";
 import type { FileListing, RemoteFileEntry, Server, TrustedExecutor } from "../types";
+import { TransferQueue } from "./TransferQueue";
 
 interface Props {
   server: Server;
@@ -19,6 +20,7 @@ export function FileManager({ server, trusted }: Props) {
   const [busy, setBusy] = useState("list");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [transferRevision, setTransferRevision] = useState(0);
   const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const requestId = useRef(0);
@@ -98,27 +100,42 @@ export function FileManager({ server, trusted }: Props) {
   const upload = async () => {
     if (!listing) return;
     setError("");
+    setNotice("");
     try {
-      const localPath = await open({ title: "选择要上传的文件", multiple: false, directory: false });
-      if (!localPath) return;
-      const fileName = localPath.split(/[\\/]/).pop();
-      if (!fileName) return;
-      if (listing.entries.some((entry) => entry.name === fileName) && !window.confirm(`远程已存在 ${fileName}，确认覆盖？`)) return;
-      await perform("upload", (allow) => api.uploadRemoteFile(server.id, localPath, listing.path, fileName, allow), `已上传 ${fileName}`);
+      const selection = await open({ title: "选择要上传的文件", multiple: true, directory: false });
+      if (!selection) return;
+      const localPaths = Array.isArray(selection) ? selection : [selection];
+      const files = localPaths.map((localPath) => ({ localPath, fileName: localPath.split(/[\\/]/).pop() })).filter((file): file is { localPath: string; fileName: string } => Boolean(file.fileName));
+      const existing = files.filter((file) => listing.entries.some((entry) => entry.name === file.fileName));
+      if (existing.length > 0 && !window.confirm(`远程已存在 ${existing.map((file) => file.fileName).join("、")}，确认在传输完成后覆盖？`)) return;
+      setBusy("upload");
+      await trusted(server, (allow) => api.testConnection(server.id, allow));
+      for (const file of files) await api.enqueueFileUpload(server.id, file.localPath, listing.path, file.fileName);
+      setTransferRevision((value) => value + 1);
+      setNotice(`已将 ${files.length} 个文件加入后台传输队列`);
     } catch (reason) {
       setError(errorMessage(reason));
+    } finally {
+      setBusy("");
     }
   };
 
   const download = async () => {
     if (!selected || selected.kind === "directory") return;
     setError("");
+    setNotice("");
     try {
       const localPath = await save({ title: "选择下载位置", defaultPath: selected.name });
       if (!localPath) return;
-      await perform("download", (allow) => api.downloadRemoteFile(server.id, selected.path, localPath, allow), `已下载 ${selected.name} 到本机`);
+      setBusy("download");
+      await trusted(server, (allow) => api.testConnection(server.id, allow));
+      await api.enqueueFileDownload(server.id, selected.path, localPath);
+      setTransferRevision((value) => value + 1);
+      setNotice(`已将 ${selected.name} 加入后台传输队列`);
     } catch (reason) {
       setError(errorMessage(reason));
+    } finally {
+      setBusy("");
     }
   };
 
@@ -161,7 +178,8 @@ export function FileManager({ server, trusted }: Props) {
       </tbody></table> : !error && <div className="skeleton file-skeleton" aria-label="正在读取远程目录" />}
       {listing?.entries.length === 0 && <div className="file-empty"><FolderOpen size={28} /><p>这个目录是空的</p></div>}
     </div>
-    {busy && busy !== "list" && <div className="file-progress" role="status">{{ mkdir: "正在创建目录", rename: "正在重命名", delete: "正在删除", upload: "正在上传，请勿关闭窗口", download: "正在下载，请勿关闭窗口" }[busy]}</div>}
+    <TransferQueue serverId={server.id} revision={transferRevision} onCompleted={() => void load(listing?.path)} />
+    {busy && busy !== "list" && <div className="file-progress" role="status">{{ mkdir: "正在创建目录", rename: "正在重命名", delete: "正在删除", upload: "正在验证连接并加入队列", download: "正在验证连接并加入队列" }[busy]}</div>}
     <dialog ref={dialogRef} className="dialog file-dialog" onCancel={(event) => { event.preventDefault(); if (busy !== "mkdir" && busy !== "rename") setNameDialog(null); }}>
       <form onSubmit={(event) => { event.preventDefault(); if (nameDialog?.mode === "mkdir") createDirectory(); else rename(); }}>
         <div className="dialog-header"><h2>{nameDialog?.mode === "mkdir" ? "新建远程目录" : "重命名"}</h2><button className="icon-btn" type="button" aria-label="关闭" disabled={busy === "mkdir" || busy === "rename"} onClick={() => setNameDialog(null)}><X size={18} /></button></div>

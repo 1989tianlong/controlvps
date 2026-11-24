@@ -12,15 +12,16 @@ use crate::files;
 use crate::metrics;
 use crate::models::{
     ActionResult, AuthMethod, BatchResult, ConnectionReport, ConnectionTest, DockerAction,
-    DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer, OperationLog,
-    PortForwardInput, PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet,
-    SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs,
-    SystemdOverview, TerminalSession, TunnelStatus,
+    DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer, FileTransferKind,
+    FileTransferTask, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Server,
+    ServerInput, ServerMetrics, Snippet, SnippetInput, SshConfigImport, SystemdAction,
+    SystemdActionResult, SystemdLogs, SystemdOverview, TerminalSession, TunnelStatus,
 };
 use crate::ssh;
 use crate::ssh_config;
 use crate::systemd;
 use crate::terminal::{self, TerminalCommand, TerminalRegistry};
+use crate::transfers::TransferRegistry;
 use crate::tunnel::TunnelRegistry;
 
 pub struct AppPaths {
@@ -156,10 +157,14 @@ pub fn update_server(
 #[tauri::command]
 pub fn delete_server(
     db: State<'_, Database>,
+    transfers: State<'_, TransferRegistry>,
     tunnels: State<'_, TunnelRegistry>,
     id: String,
 ) -> CommandResult<()> {
     db.ensure_server_deletable(&id)
+        .map_err(CommandError::from)?;
+    transfers
+        .cancel_by_server(&id)
         .map_err(CommandError::from)?;
     tunnels.stop_by_server(&id).map_err(CommandError::from)?;
     ssh::delete_credentials(&id).map_err(CommandError::from)?;
@@ -805,6 +810,98 @@ pub async fn download_remote_file(
         format!("已下载 {}，{} 字节", transfer.remote_path, transfer.bytes)
     });
     result
+}
+
+#[tauri::command]
+pub fn enqueue_file_upload(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    transfers: State<'_, TransferRegistry>,
+    id: String,
+    local_path: String,
+    remote_directory: String,
+    file_name: String,
+    allow_unknown_host: bool,
+) -> CommandResult<FileTransferTask> {
+    let job = connection_job(&db, &id)?;
+    let remote_path = PathBuf::from(&remote_directory)
+        .join(&file_name)
+        .to_string_lossy()
+        .into_owned();
+    transfers
+        .enqueue(
+            db.inner().clone(),
+            FileTransferKind::Upload,
+            job,
+            local_path,
+            remote_path,
+            file_name,
+            paths.known_hosts.clone(),
+            allow_unknown_host,
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn enqueue_file_download(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    transfers: State<'_, TransferRegistry>,
+    id: String,
+    remote_path: String,
+    local_path: String,
+    allow_unknown_host: bool,
+) -> CommandResult<FileTransferTask> {
+    let job = connection_job(&db, &id)?;
+    let file_name = PathBuf::from(&remote_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::Message("远程文件路径无效".into()))
+        .map_err(CommandError::from)?
+        .to_string();
+    transfers
+        .enqueue(
+            db.inner().clone(),
+            FileTransferKind::Download,
+            job,
+            local_path,
+            remote_path,
+            file_name,
+            paths.known_hosts.clone(),
+            allow_unknown_host,
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_file_transfers(
+    transfers: State<'_, TransferRegistry>,
+) -> CommandResult<Vec<FileTransferTask>> {
+    transfers.list().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn cancel_file_transfer(
+    transfers: State<'_, TransferRegistry>,
+    id: String,
+) -> CommandResult<FileTransferTask> {
+    transfers.cancel(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn retry_file_transfer(
+    transfers: State<'_, TransferRegistry>,
+    id: String,
+) -> CommandResult<FileTransferTask> {
+    transfers.retry(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn clear_finished_file_transfers(
+    transfers: State<'_, TransferRegistry>,
+    server_id: String,
+) -> CommandResult<()> {
+    transfers.clear_finished(&server_id).map_err(Into::into)
 }
 
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {

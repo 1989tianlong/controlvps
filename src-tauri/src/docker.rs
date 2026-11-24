@@ -5,7 +5,7 @@ use ssh2::Session;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DockerAction, DockerActionResult, DockerContainer, DockerLogs, DockerOverview,
+    DockerAction, DockerActionResult, DockerContainer, DockerLogs, DockerOverview, DockerService,
 };
 use crate::ssh::{self, ExecOutput};
 
@@ -111,17 +111,22 @@ fn parse_container(line: &str) -> AppResult<DockerContainer> {
             .map(str::to_string)
             .ok_or_else(|| AppError::Message(format!("Docker 容器列表缺少字段 {key}")))
     };
+    let id = required("ID")?;
+    let name = required("Names")?;
+    let ports = value
+        .get("Ports")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let services = parse_services(&id, &name, &ports);
     Ok(DockerContainer {
-        id: required("ID")?,
-        name: required("Names")?,
+        id,
+        name,
         image: required("Image")?,
         state: required("State")?,
         status: required("Status")?,
-        ports: value
-            .get("Ports")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        ports,
+        services,
         created_at: value
             .get("CreatedAt")
             .and_then(Value::as_str)
@@ -132,6 +137,39 @@ fn parse_container(line: &str) -> AppResult<DockerContainer> {
         memory_usage: None,
         pids: None,
     })
+}
+
+fn parse_services(container_id: &str, container_name: &str, ports: &str) -> Vec<DockerService> {
+    let mut services = ports
+        .split(',')
+        .filter_map(|entry| {
+            let (published, target) = entry.trim().split_once("->")?;
+            let (_, host_port) = published.rsplit_once(':')?;
+            let (container_port, protocol) = target.split_once('/')?;
+            Some(DockerService {
+                container_id: container_id.to_string(),
+                container_name: container_name.to_string(),
+                host_port: host_port.parse().ok()?,
+                container_port: container_port.parse().ok()?,
+                protocol: protocol.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    services.sort_by_key(|service| {
+        (
+            service.host_port,
+            service.container_port,
+            service.protocol.clone(),
+        )
+    });
+    services.dedup_by_key(|service| {
+        (
+            service.host_port,
+            service.container_port,
+            service.protocol.clone(),
+        )
+    });
+    services
 }
 
 fn percentage(value: &Value, key: &str) -> Option<f64> {

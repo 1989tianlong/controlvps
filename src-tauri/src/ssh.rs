@@ -14,19 +14,19 @@ use crate::models::{AuthMethod, ConnectionReport, ConnectionTest, DiagnosticStep
 const KEYCHAIN_SERVICE: &str = "com.controlvps.app";
 const KEEPALIVE_INTERVAL_SECONDS: u32 = 30;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Credentials {
     pub password: Option<String>,
     pub key_passphrase: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JumpHost {
     pub server: Server,
     pub credentials: Credentials,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConnectionJob {
     pub server: Server,
     pub credentials: Credentials,

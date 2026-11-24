@@ -1,9 +1,11 @@
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::DateTime;
-use ssh2::{FileStat, Session, Sftp};
+use ssh2::{FileStat, RenameFlags, Session, Sftp};
+use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{FileListing, FileTransfer, RemoteFileEntry, RemoteFileKind};
@@ -81,36 +83,132 @@ pub fn upload(
     remote_directory: &str,
     file_name: &str,
 ) -> AppResult<FileTransfer> {
+    upload_with_progress(
+        session,
+        local_path,
+        remote_directory,
+        file_name,
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+}
+
+pub fn upload_with_progress(
+    session: &Session,
+    local_path: &str,
+    remote_directory: &str,
+    file_name: &str,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> AppResult<FileTransfer> {
     let local = PathBuf::from(local_path);
     if !local.is_file() {
         return Err(AppError::Message("请选择要上传的本地文件".into()));
     }
     let remote = child_path(remote_directory, file_name)?;
+    let temporary = child_path(
+        remote_directory,
+        &format!(".controlvps-{}.part", Uuid::new_v4()),
+    )?;
+    let total = local.metadata()?.len();
     let mut source = File::open(&local)?;
     let sftp = session.sftp()?;
-    let mut destination = sftp.create(&remote)?;
-    let bytes = std::io::copy(&mut source, &mut destination)?;
-    destination.flush()?;
-    Ok(FileTransfer {
-        bytes,
-        local_path: local.to_string_lossy().into_owned(),
-        remote_path: remote.to_string_lossy().into_owned(),
-    })
+    let result = (|| {
+        let mut destination = sftp.create(&temporary)?;
+        let bytes =
+            copy_with_progress(&mut source, &mut destination, total, cancel, &mut progress)?;
+        destination.flush()?;
+        drop(destination);
+        sftp.rename(
+            &temporary,
+            &remote,
+            Some(RenameFlags::ATOMIC | RenameFlags::OVERWRITE | RenameFlags::NATIVE),
+        )?;
+        Ok(FileTransfer {
+            bytes,
+            local_path: local.to_string_lossy().into_owned(),
+            remote_path: remote.to_string_lossy().into_owned(),
+        })
+    })();
+    if result.is_err() {
+        let _ = sftp.unlink(&temporary);
+    }
+    result
 }
 
 pub fn download(session: &Session, remote_path: &str, local_path: &str) -> AppResult<FileTransfer> {
+    download_with_progress(
+        session,
+        remote_path,
+        local_path,
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+}
+
+pub fn download_with_progress(
+    session: &Session,
+    remote_path: &str,
+    local_path: &str,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> AppResult<FileTransfer> {
     let remote = safe_remote_path(remote_path)?;
     let local = PathBuf::from(local_path);
+    if local.file_name().is_none() {
+        return Err(AppError::Message("请选择有效的本机下载文件路径".into()));
+    }
+    let temporary = local.with_file_name(format!(".controlvps-{}.part", Uuid::new_v4()));
     let sftp = session.sftp()?;
+    let total = sftp.stat(&remote)?.size.unwrap_or(0);
     let mut source = sftp.open(&remote)?;
-    let mut destination = File::create(&local)?;
-    let bytes = std::io::copy(&mut source, &mut destination)?;
-    destination.flush()?;
-    Ok(FileTransfer {
-        bytes,
-        local_path: local.to_string_lossy().into_owned(),
-        remote_path: remote.to_string_lossy().into_owned(),
-    })
+    let result = (|| {
+        let mut destination = File::create(&temporary)?;
+        let bytes =
+            copy_with_progress(&mut source, &mut destination, total, cancel, &mut progress)?;
+        destination.flush()?;
+        drop(destination);
+        std::fs::rename(&temporary, &local)?;
+        Ok(FileTransfer {
+            bytes,
+            local_path: local.to_string_lossy().into_owned(),
+            remote_path: remote.to_string_lossy().into_owned(),
+        })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn copy_with_progress(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    total: u64,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(u64, u64),
+) -> AppResult<u64> {
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut transferred = 0_u64;
+    progress(0, total);
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(AppError::Message("传输已取消".into()));
+        }
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        destination.write_all(&buffer[..count])?;
+        transferred += count as u64;
+        progress(transferred, total);
+    }
+    if total > 0 && transferred != total {
+        return Err(AppError::Message(format!(
+            "传输不完整：预期 {total} 字节，实际 {transferred} 字节"
+        )));
+    }
+    Ok(transferred)
 }
 
 fn delete_directory(sftp: &Sftp, path: &Path) -> AppResult<()> {

@@ -10,12 +10,14 @@ mod ssh;
 mod ssh_config;
 mod systemd;
 mod terminal;
+mod transfers;
 mod tunnel;
 
 use commands::AppPaths;
 use db::Database;
 use tauri::Manager;
 use terminal::TerminalRegistry;
+use transfers::TransferRegistry;
 use tunnel::TunnelRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(TerminalRegistry::default())
+        .manage(TransferRegistry::default())
         .manage(TunnelRegistry::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -75,6 +78,12 @@ pub fn run() {
             commands::delete_remote_file,
             commands::upload_remote_file,
             commands::download_remote_file,
+            commands::enqueue_file_upload,
+            commands::enqueue_file_download,
+            commands::list_file_transfers,
+            commands::cancel_file_transfer,
+            commands::retry_file_transfer,
+            commands::clear_finished_file_transfers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ControlVPS");
