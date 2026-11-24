@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "ControlVPS main window capabilities",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default", "opener:default", "dialog:default"]
+  "permissions": ["core:default", "core:event:default", "opener:default", "dialog:default", "notification:default"]
 }

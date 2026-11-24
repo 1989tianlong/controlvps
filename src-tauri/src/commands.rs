@@ -4,6 +4,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::alerts::{self, AlertRegistry};
 use crate::batch;
 use crate::db::Database;
 use crate::docker;
@@ -11,11 +12,12 @@ use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, AuthMethod, BatchResult, ConnectionReport, ConnectionTest, DockerAction,
-    DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer, FileTransferKind,
-    FileTransferTask, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Server,
-    ServerInput, ServerMetrics, Snippet, SnippetInput, SshConfigImport, SystemdAction,
-    SystemdActionResult, SystemdLogs, SystemdOverview, TerminalSession, TunnelStatus,
+    ActionResult, AlertEvent, AuthMethod, BatchResult, ConnectionReport, ConnectionTest,
+    DockerAction, DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer,
+    FileTransferKind, FileTransferTask, MetricSample, MonitoringSettings, OperationLog,
+    PortForwardInput, PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet,
+    SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
+    TerminalSession, TunnelStatus,
 };
 use crate::ssh;
 use crate::ssh_config;
@@ -217,14 +219,17 @@ pub async fn diagnose_connection(
 
 #[tauri::command]
 pub async fn collect_metrics(
+    app: AppHandle,
     db: State<'_, Database>,
     paths: State<'_, AppPaths>,
+    alerts: State<'_, AlertRegistry>,
     id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<ServerMetrics> {
     let job = connection_job(&db, &id)?;
+    let server = job.server.clone();
     let known_hosts = paths.known_hosts.clone();
-    run_blocking(move || {
+    let result = run_blocking(move || {
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
@@ -234,7 +239,52 @@ pub async fn collect_metrics(
         )?;
         metrics::collect(&job.server.id, &connection)
     })
-    .await
+    .await;
+    match &result {
+        Ok(metrics) => {
+            db.insert_metric_sample(metrics).map_err(CommandError::from)?;
+            let _ = alerts::record_success(&app, &db, &alerts, &server, metrics);
+        }
+        Err(error) => {
+            let _ = alerts::record_failure(&app, &db, &alerts, &server, &error.message);
+        }
+    }
+    result
+}
+
+#[tauri::command]
+pub fn list_metric_history(
+    db: State<'_, Database>,
+    server_id: String,
+    hours: u32,
+) -> CommandResult<Vec<MetricSample>> {
+    db.list_metric_history(&server_id, hours).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_monitoring_settings(db: State<'_, Database>) -> CommandResult<MonitoringSettings> {
+    db.monitoring_settings().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_monitoring_settings(
+    db: State<'_, Database>,
+    settings: MonitoringSettings,
+) -> CommandResult<MonitoringSettings> {
+    db.update_monitoring_settings(&settings).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_alert_events(
+    db: State<'_, Database>,
+    server_id: Option<String>,
+) -> CommandResult<Vec<AlertEvent>> {
+    db.list_alert_events(server_id.as_deref()).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_active_alerts(db: State<'_, Database>) -> CommandResult<Vec<AlertEvent>> {
+    db.list_active_alerts().map_err(Into::into)
 }
 
 #[tauri::command]

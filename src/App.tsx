@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, TerminalSquare, X } from "lucide-react";
+import { Activity, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, TerminalSquare, X } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
-import type { Server, ServerMetrics } from "./types";
+import type { AlertEvent, MonitoringSettings, Server, ServerMetrics } from "./types";
+import { useMonitoring } from "./hooks/useMonitoring";
+import { sendSystemNotification } from "./lib/notifications";
 import { ServerForm } from "./components/ServerForm";
 import { OverviewPage } from "./components/OverviewPage";
 import { ServersPage } from "./components/ServersPage";
@@ -12,10 +15,14 @@ import { ActivityPage } from "./components/ActivityPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { AutomationPage } from "./components/AutomationPage";
 import { TunnelsPage } from "./components/TunnelsPage";
+import { MonitoringPage } from "./components/MonitoringPage";
+import { TerminalWorkspace, type TerminalRequest } from "./components/TerminalWorkspace";
 
 const pages = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
   { id: "servers", label: "我的 VPS", icon: ServerIcon },
+  { id: "monitoring", label: "监控告警", icon: Activity },
+  { id: "terminal", label: "终端工作区", icon: TerminalSquare },
   { id: "automation", label: "批量运维", icon: ListChecks },
   { id: "tunnels", label: "隧道中心", icon: Network },
   { id: "discover", label: "发现 VPS", icon: Compass },
@@ -36,11 +43,17 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [servers, setServers] = useState<Server[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ServerMetrics>>({});
+  const [monitoringSettings, setMonitoringSettings] = useState<MonitoringSettings>();
+  const [terminalRequest, setTerminalRequest] = useState<TerminalRequest>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Server | null>(null);
   const { execute, trustDialog } = useHostTrust();
+  const updateMetrics = useCallback((id: string, value: ServerMetrics) => {
+    setMetrics((current) => ({ ...current, [id]: value }));
+  }, []);
+  const { errors: monitorErrors, collecting } = useMonitoring(servers, monitoringSettings, updateMetrics);
 
   const loadServers = useCallback(async () => {
     setError("");
@@ -56,6 +69,27 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, [loadServers]);
 
+  useEffect(() => {
+    void api.monitoringSettings().then(setMonitoringSettings).catch((reason) => setError(errorMessage(reason)));
+  }, []);
+
+  useEffect(() => {
+    if (!monitoringSettings?.notificationsEnabled) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AlertEvent>("monitoring-alert", (event) => {
+      if (event.payload.status !== "triggered") return;
+      void sendSystemNotification(`ControlVPS · ${event.payload.serverName}`, event.payload.message).catch(() => undefined);
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [monitoringSettings?.notificationsEnabled]);
+
   const navigate = (target: Page) => {
     window.location.hash = `/${target}`;
     setPage(target);
@@ -63,6 +97,10 @@ export default function App() {
   };
   const add = () => { setEditing(null); setFormOpen(true); };
   const edit = (server: Server) => { setEditing(server); setFormOpen(true); };
+  const openTerminal = (server: Server) => {
+    setTerminalRequest((current) => ({ id: (current?.id ?? 0) + 1, serverId: server.id }));
+    navigate("terminal");
+  };
   const saved = (savedServer: Server) => {
     setServers((current) => {
       const exists = current.some((server) => server.id === savedServer.id);
@@ -79,17 +117,19 @@ export default function App() {
       <div className="sidebar-foot"><LockKeyhole size={17} /><p>本地优先，凭据由 macOS Keychain 保护。</p></div>
     </aside>
     <main className="main-column">
-      <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label"><LockKeyhole size={14} />本地工作区</span></header>
+      <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label">{collecting ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting ? "正在采集监控" : "本地工作区"}</span></header>
       <div className="page">
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
-        {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={(id, value) => setMetrics((current) => ({ ...current, [id]: value }))} onAdd={add} onEdit={edit} onChanged={loadServers} trusted={execute} />}
+        {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
+        {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} />}
         {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} />}
         {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
+        <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}
-        {page === "settings" && <SettingsPage />}
+        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} />}
       </div>
     </main>
     <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />

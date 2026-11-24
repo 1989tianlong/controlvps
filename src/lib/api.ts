@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import type {
   ActionResult,
+  AlertEvent,
   AppInfo,
   BatchResult,
   ConnectionReport,
@@ -13,6 +14,8 @@ import type {
   FileListing,
   FileTransfer,
   FileTransferTask,
+  MetricSample,
+  MonitoringSettings,
   OperationLog,
   PortForwardInput,
   PortForwardRule,
@@ -55,10 +58,23 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_port_forwards", "list_tunnel_statuses"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts"].includes(command)) return [] as T;
+    if (command === "get_monitoring_settings") {
+      return {
+        autoCollect: false,
+        intervalSeconds: 30,
+        alertsEnabled: true,
+        notificationsEnabled: true,
+        cpuThreshold: 90,
+        memoryThreshold: 90,
+        diskThreshold: 90,
+        offlineAfter: 3,
+        cooldownMinutes: 15,
+      } as T;
+    }
     if (command === "get_app_info") {
       return {
-        version: "0.6.0",
+        version: "0.9.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -92,6 +108,13 @@ export const api = {
     call<ConnectionReport>("diagnose_connection", { id, allowUnknownHost }),
   collectMetrics: (id: string, allowUnknownHost = false) =>
     call<ServerMetrics>("collect_metrics", { id, allowUnknownHost }),
+  metricHistory: (serverId: string, hours: number) =>
+    call<MetricSample[]>("list_metric_history", { serverId, hours }),
+  monitoringSettings: () => call<MonitoringSettings>("get_monitoring_settings"),
+  updateMonitoringSettings: (settings: MonitoringSettings) =>
+    call<MonitoringSettings>("update_monitoring_settings", { settings }),
+  alertEvents: (serverId?: string) => call<AlertEvent[]>("list_alert_events", { serverId }),
+  activeAlerts: () => call<AlertEvent[]>("list_active_alerts"),
   listDockerContainers: (id: string, allowUnknownHost = false) =>
     call<DockerOverview>("list_docker_containers", { id, allowUnknownHost }),
   runDockerAction: (id: string, containerId: string, action: DockerAction, allowUnknownHost = false) =>

@@ -1,3 +1,4 @@
+mod alerts;
 mod batch;
 mod commands;
 mod db;
@@ -13,6 +14,7 @@ mod terminal;
 mod transfers;
 mod tunnel;
 
+use alerts::AlertRegistry;
 use commands::AppPaths;
 use db::Database;
 use tauri::Manager;
@@ -25,7 +27,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(TerminalRegistry::default())
+        .manage(AlertRegistry::default())
         .manage(TransferRegistry::default())
         .manage(TunnelRegistry::default())
         .setup(|app| {
@@ -49,6 +53,11 @@ pub fn run() {
             commands::test_connection,
             commands::diagnose_connection,
             commands::collect_metrics,
+            commands::list_metric_history,
+            commands::get_monitoring_settings,
+            commands::update_monitoring_settings,
+            commands::list_alert_events,
+            commands::list_active_alerts,
             commands::list_docker_containers,
             commands::run_docker_action,
             commands::get_docker_logs,

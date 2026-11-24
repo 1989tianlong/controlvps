@@ -106,6 +106,80 @@ pub struct ServerMetrics {
     pub collected_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricSample {
+    pub id: i64,
+    pub server_id: String,
+    pub cpu_usage: f64,
+    pub memory_usage: f64,
+    pub disk_usage: f64,
+    pub network_rx_bytes_per_second: f64,
+    pub network_tx_bytes_per_second: f64,
+    pub load_average: f64,
+    pub collected_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitoringSettings {
+    pub auto_collect: bool,
+    pub interval_seconds: u32,
+    pub alerts_enabled: bool,
+    pub notifications_enabled: bool,
+    pub cpu_threshold: f64,
+    pub memory_threshold: f64,
+    pub disk_threshold: f64,
+    pub offline_after: u32,
+    pub cooldown_minutes: u32,
+}
+
+impl Default for MonitoringSettings {
+    fn default() -> Self {
+        Self {
+            auto_collect: false,
+            interval_seconds: 30,
+            alerts_enabled: true,
+            notifications_enabled: true,
+            cpu_threshold: 90.0,
+            memory_threshold: 90.0,
+            disk_threshold: 90.0,
+            offline_after: 3,
+            cooldown_minutes: 15,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertKind {
+    Offline,
+    Cpu,
+    Memory,
+    Disk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertStatus {
+    Triggered,
+    Recovered,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertEvent {
+    pub id: i64,
+    pub server_id: String,
+    pub server_name: String,
+    pub kind: AlertKind,
+    pub status: AlertStatus,
+    pub message: String,
+    pub value: Option<f64>,
+    pub threshold: Option<f64>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuickAction {

@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, Row};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    OperationLog, PortForwardInput, PortForwardRule, Server, ServerInput, Snippet, SnippetInput,
+    AlertEvent, AlertKind, AlertStatus, MetricSample, MonitoringSettings, OperationLog,
+    PortForwardInput, PortForwardRule, Server, ServerInput, ServerMetrics, Snippet, SnippetInput,
 };
 
 #[derive(Clone)]
@@ -73,6 +74,37 @@ impl Database {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS metric_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id TEXT NOT NULL,
+                cpu_usage REAL NOT NULL,
+                memory_usage REAL NOT NULL,
+                disk_usage REAL NOT NULL,
+                network_rx_bytes_per_second REAL NOT NULL,
+                network_tx_bytes_per_second REAL NOT NULL,
+                load_average REAL NOT NULL,
+                collected_at TEXT NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_metric_samples_server_time
+             ON metric_samples(server_id, collected_at);
+             CREATE TABLE IF NOT EXISTS alert_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                value REAL,
+                threshold REAL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_alert_events_server
+             ON alert_events(server_id, id DESC);
+             CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
              );",
         )?;
         let has_forward_kind = connection.query_row(
@@ -421,6 +453,231 @@ impl Database {
             .execute("DELETE FROM port_forwards WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    pub fn insert_metric_sample(&self, metrics: &ServerMetrics) -> AppResult<()> {
+        let memory_usage = usage_percent(metrics.memory_used, metrics.memory_total);
+        let disk_usage = usage_percent(metrics.disk_used, metrics.disk_total);
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO metric_samples (
+                server_id, cpu_usage, memory_usage, disk_usage, network_rx_bytes_per_second,
+                network_tx_bytes_per_second, load_average, collected_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                metrics.server_id,
+                metrics.cpu_usage,
+                memory_usage,
+                disk_usage,
+                metrics.network_rx_bytes_per_second,
+                metrics.network_tx_bytes_per_second,
+                metrics.load_average[0],
+                metrics.collected_at,
+            ],
+        )?;
+        let cutoff = (Utc::now() - Duration::days(7)).to_rfc3339();
+        connection.execute(
+            "DELETE FROM metric_samples WHERE collected_at < ?1",
+            [cutoff],
+        )?;
+        connection.execute(
+            "DELETE FROM metric_samples WHERE server_id = ?1 AND id IN (
+                SELECT id FROM metric_samples WHERE server_id = ?1
+                ORDER BY id DESC LIMIT -1 OFFSET 50000
+             )",
+            [&metrics.server_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_metric_history(&self, server_id: &str, hours: u32) -> AppResult<Vec<MetricSample>> {
+        if !(1..=168).contains(&hours) {
+            return Err(AppError::Message("历史趋势范围必须在 1 小时到 7 天之间".into()));
+        }
+        self.get_server(server_id)?;
+        let cutoff = (Utc::now() - Duration::hours(i64::from(hours))).to_rfc3339();
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, server_id, cpu_usage, memory_usage, disk_usage,
+                    network_rx_bytes_per_second, network_tx_bytes_per_second, load_average, collected_at
+             FROM metric_samples WHERE server_id = ?1 AND collected_at >= ?2
+             ORDER BY collected_at, id",
+        )?;
+        let rows = statement.query_map(params![server_id, cutoff], |row| {
+            Ok(MetricSample {
+                id: row.get(0)?,
+                server_id: row.get(1)?,
+                cpu_usage: row.get(2)?,
+                memory_usage: row.get(3)?,
+                disk_usage: row.get(4)?,
+                network_rx_bytes_per_second: row.get(5)?,
+                network_tx_bytes_per_second: row.get(6)?,
+                load_average: row.get(7)?,
+                collected_at: row.get(8)?,
+            })
+        })?;
+        let samples = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(downsample(samples, 720))
+    }
+
+    pub fn monitoring_settings(&self) -> AppResult<MonitoringSettings> {
+        let connection = self.connection()?;
+        let value = connection.query_row(
+            "SELECT value FROM app_settings WHERE key = 'monitoring'",
+            [],
+            |row| row.get::<_, String>(0),
+        );
+        match value {
+            Ok(value) => serde_json::from_str(&value)
+                .map_err(|error| AppError::Message(format!("监控设置无法读取：{error}"))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(MonitoringSettings::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn update_monitoring_settings(&self, settings: &MonitoringSettings) -> AppResult<MonitoringSettings> {
+        validate_monitoring_settings(settings)?;
+        let value = serde_json::to_string(settings).map_err(|error| AppError::Message(error.to_string()))?;
+        self.connection()?.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('monitoring', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [value],
+        )?;
+        Ok(settings.clone())
+    }
+
+    pub fn record_alert(
+        &self,
+        server: &Server,
+        kind: AlertKind,
+        status: AlertStatus,
+        message: String,
+        value: Option<f64>,
+        threshold: Option<f64>,
+    ) -> AppResult<AlertEvent> {
+        let created_at = Utc::now().to_rfc3339();
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO alert_events (
+                server_id, kind, status, message, value, threshold, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                server.id,
+                alert_kind(kind),
+                alert_status(status),
+                message,
+                value,
+                threshold,
+                created_at,
+            ],
+        )?;
+        Ok(AlertEvent {
+            id: connection.last_insert_rowid(),
+            server_id: server.id.clone(),
+            server_name: server.name.clone(),
+            kind,
+            status,
+            message,
+            value,
+            threshold,
+            created_at,
+        })
+    }
+
+    pub fn list_alert_events(&self, server_id: Option<&str>) -> AppResult<Vec<AlertEvent>> {
+        let connection = self.connection()?;
+        let sql = "SELECT a.id, a.server_id, s.name, a.kind, a.status, a.message,
+                          a.value, a.threshold, a.created_at
+                   FROM alert_events a JOIN servers s ON s.id = a.server_id";
+        let mut events = Vec::new();
+        if let Some(id) = server_id {
+            let mut statement = connection.prepare(&format!(
+                "{sql} WHERE a.server_id = ?1 ORDER BY a.id DESC LIMIT 100"
+            ))?;
+            let rows = statement.query_map([id], row_to_alert_event)?;
+            for row in rows {
+                events.push(row?);
+            }
+        } else {
+            let mut statement =
+                connection.prepare(&format!("{sql} ORDER BY a.id DESC LIMIT 100"))?;
+            let rows = statement.query_map([], row_to_alert_event)?;
+            for row in rows {
+                events.push(row?);
+            }
+        }
+        Ok(events)
+    }
+
+    pub fn list_active_alerts(&self) -> AppResult<Vec<AlertEvent>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT a.id, a.server_id, s.name, a.kind, a.status, a.message,
+                    a.value, a.threshold, a.created_at
+             FROM alert_events a JOIN servers s ON s.id = a.server_id
+             WHERE a.status = 'triggered' AND a.id IN (
+                SELECT MAX(id) FROM alert_events GROUP BY server_id, kind
+             ) ORDER BY a.id DESC",
+        )?;
+        let rows = statement.query_map([], row_to_alert_event)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+}
+
+fn usage_percent(used: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (used as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+fn downsample(samples: Vec<MetricSample>, limit: usize) -> Vec<MetricSample> {
+    if samples.len() <= limit {
+        return samples;
+    }
+    let last = samples.len() - 1;
+    (0..limit)
+        .map(|index| samples[index * last / (limit - 1)].clone())
+        .collect()
+}
+
+fn validate_monitoring_settings(settings: &MonitoringSettings) -> AppResult<()> {
+    if !(15..=3600).contains(&settings.interval_seconds) {
+        return Err(AppError::Message("采集间隔必须在 15 秒到 1 小时之间".into()));
+    }
+    if [
+        settings.cpu_threshold,
+        settings.memory_threshold,
+        settings.disk_threshold,
+    ]
+    .into_iter()
+    .any(|value| !value.is_finite() || !(1.0..=100.0).contains(&value))
+    {
+        return Err(AppError::Message("告警阈值必须在 1% 到 100% 之间".into()));
+    }
+    if !(1..=20).contains(&settings.offline_after) {
+        return Err(AppError::Message("离线判定次数必须在 1 到 20 之间".into()));
+    }
+    if !(1..=1440).contains(&settings.cooldown_minutes) {
+        return Err(AppError::Message("告警冷却时间必须在 1 分钟到 24 小时之间".into()));
+    }
+    Ok(())
+}
+
+fn alert_kind(kind: AlertKind) -> &'static str {
+    match kind {
+        AlertKind::Offline => "offline",
+        AlertKind::Cpu => "cpu",
+        AlertKind::Memory => "memory",
+        AlertKind::Disk => "disk",
+    }
+}
+
+fn alert_status(status: AlertStatus) -> &'static str {
+    match status {
+        AlertStatus::Triggered => "triggered",
+        AlertStatus::Recovered => "recovered",
+    }
 }
 
 fn validate_port_forward(input: &PortForwardInput) -> AppResult<()> {
@@ -571,6 +828,24 @@ fn row_to_port_forward(row: &Row<'_>) -> rusqlite::Result<PortForwardRule> {
         destination_port: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
+    })
+}
+
+fn row_to_alert_event(row: &Row<'_>) -> rusqlite::Result<AlertEvent> {
+    let kind: String = row.get(3)?;
+    let status: String = row.get(4)?;
+    Ok(AlertEvent {
+        id: row.get(0)?,
+        server_id: row.get(1)?,
+        server_name: row.get(2)?,
+        kind: serde_json::from_str(&format!("\"{kind}\""))
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        status: serde_json::from_str(&format!("\"{status}\""))
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        message: row.get(5)?,
+        value: row.get(6)?,
+        threshold: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 

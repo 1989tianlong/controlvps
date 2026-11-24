@@ -76,6 +76,45 @@ export interface ServerMetrics {
   collectedAt: string;
 }
 
+export interface MetricSample {
+  id: number;
+  serverId: string;
+  cpuUsage: number;
+  memoryUsage: number;
+  diskUsage: number;
+  networkRxBytesPerSecond: number;
+  networkTxBytesPerSecond: number;
+  loadAverage: number;
+  collectedAt: string;
+}
+
+export interface MonitoringSettings {
+  autoCollect: boolean;
+  intervalSeconds: number;
+  alertsEnabled: boolean;
+  notificationsEnabled: boolean;
+  cpuThreshold: number;
+  memoryThreshold: number;
+  diskThreshold: number;
+  offlineAfter: number;
+  cooldownMinutes: number;
+}
+
+export type AlertKind = "offline" | "cpu" | "memory" | "disk";
+export type AlertStatus = "triggered" | "recovered";
+
+export interface AlertEvent {
+  id: number;
+  serverId: string;
+  serverName: string;
+  kind: AlertKind;
+  status: AlertStatus;
+  message: string;
+  value?: number;
+  threshold?: number;
+  createdAt: string;
+}
+
 export type QuickAction =
   | "system_info"
   | "processes"

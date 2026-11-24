@@ -13,10 +13,11 @@ interface Props {
   onAdd: () => void;
   onEdit: (server: Server) => void;
   onChanged: () => Promise<void>;
+  onOpenTerminal: (server: Server) => void;
   trusted: TrustedExecutor;
 }
 
-export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdit, onChanged, trusted }: Props) {
+export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdit, onChanged, onOpenTerminal, trusted }: Props) {
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -35,14 +36,6 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
   useEffect(() => {
     if (selectedId && !servers.some((server) => server.id === selectedId)) setSelectedId(null);
   }, [servers, selectedId]);
-
-  useEffect(() => {
-    if (!selected || !metrics[selected.id]) return;
-    const seconds = Number(localStorage.getItem("controlvps.monitorInterval") ?? "30");
-    if (!seconds) return;
-    const timer = window.setInterval(() => { void refresh(selected, false); }, seconds * 1000);
-    return () => window.clearInterval(timer);
-  }, [selected?.id, metrics[selected?.id ?? ""]?.collectedAt]);
 
   const refresh = async (server: Server, showBusy = true) => {
     if (showBusy) setBusy(server.id);
@@ -126,7 +119,7 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
             <td><div className="row-actions">
               <button className="icon-btn" type="button" title="测试连接" aria-label={`测试 ${server.name}`} disabled={busy === server.id} onClick={() => test(server)}><Cable size={16} /></button>
               <button className="icon-btn" type="button" title="刷新指标" aria-label={`刷新 ${server.name} 指标`} disabled={busy === server.id} onClick={() => refresh(server)}><RefreshCw size={16} /></button>
-              <button className="icon-btn" type="button" title="打开终端" aria-label={`打开 ${server.name} 终端`} onClick={() => open(server, "terminal")}><TerminalSquare size={16} /></button>
+              <button className="icon-btn" type="button" title="打开终端" aria-label={`打开 ${server.name} 终端`} onClick={() => onOpenTerminal(server)}><TerminalSquare size={16} /></button>
               <button className="icon-btn" type="button" title="管理文件" aria-label={`管理 ${server.name} 文件`} onClick={() => open(server, "files")}><FolderOpen size={16} /></button>
               <button className="icon-btn" type="button" title="Docker 容器" aria-label={`管理 ${server.name} Docker 容器`} onClick={() => open(server, "docker")}><Container size={16} /></button>
               <button className="icon-btn" type="button" title="systemd 服务" aria-label={`管理 ${server.name} systemd 服务`} onClick={() => open(server, "services")}><Settings2 size={16} /></button>
