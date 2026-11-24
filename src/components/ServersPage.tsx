@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Cable, FileInput, FolderOpen, Pencil, Plus, RefreshCw, Search, Server as ServerIcon, TerminalSquare, Trash2 } from "lucide-react";
+import { Cable, Container, FileInput, FolderOpen, Pencil, Plus, RefreshCw, Search, Server as ServerIcon, Settings2, TerminalSquare, Trash2 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage } from "../lib/api";
 import type { Server, ServerMetrics, TrustedExecutor } from "../types";
@@ -123,6 +123,8 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
               <button className="icon-btn" type="button" title="刷新指标" aria-label={`刷新 ${server.name} 指标`} disabled={busy === server.id} onClick={() => refresh(server)}><RefreshCw size={16} /></button>
               <button className="icon-btn" type="button" title="打开终端" aria-label={`打开 ${server.name} 终端`} onClick={() => open(server, "terminal")}><TerminalSquare size={16} /></button>
               <button className="icon-btn" type="button" title="管理文件" aria-label={`管理 ${server.name} 文件`} onClick={() => open(server, "files")}><FolderOpen size={16} /></button>
+              <button className="icon-btn" type="button" title="Docker 容器" aria-label={`管理 ${server.name} Docker 容器`} onClick={() => open(server, "docker")}><Container size={16} /></button>
+              <button className="icon-btn" type="button" title="systemd 服务" aria-label={`管理 ${server.name} systemd 服务`} onClick={() => open(server, "services")}><Settings2 size={16} /></button>
               <button className="icon-btn" type="button" title="编辑" aria-label={`编辑 ${server.name}`} onClick={() => onEdit(server)}><Pencil size={16} /></button>
               <button className="icon-btn" type="button" title="删除" aria-label={`删除 ${server.name}`} onClick={() => remove(server)}><Trash2 size={16} /></button>
             </div></td>

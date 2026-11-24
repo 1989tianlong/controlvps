@@ -4,10 +4,12 @@ import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime, formatUptime, percent } from "../lib/format";
 import type { ActionResult, QuickAction, Server, ServerMetrics, TrustedExecutor } from "../types";
 import { FileManager } from "./FileManager";
+import { DockerManager } from "./DockerManager";
+import { SystemdManager } from "./SystemdManager";
 
 const TerminalView = lazy(() => import("./TerminalView").then((module) => ({ default: module.TerminalView })));
 
-export type DetailTab = "overview" | "terminal" | "files" | "actions";
+export type DetailTab = "overview" | "terminal" | "files" | "docker" | "services" | "actions";
 
 interface Props {
   server: Server;
@@ -31,11 +33,15 @@ export function ServerDetail({ server, metrics, metricsError, tab, onTabChange, 
         <button className="tab" type="button" role="tab" aria-selected={tab === "overview"} onClick={() => onTabChange("overview")}>概览</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "terminal"} onClick={() => onTabChange("terminal")}>SSH 终端</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "files"} onClick={() => onTabChange("files")}>文件管理</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "docker"} onClick={() => onTabChange("docker")}>Docker</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "services"} onClick={() => onTabChange("services")}>服务管理</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "actions"} onClick={() => onTabChange("actions")}>快捷运维</button>
       </div>
       {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
       {tab === "terminal" && <Suspense fallback={<div className="terminal-empty">正在加载终端组件</div>}><TerminalView server={server} trusted={trusted} /></Suspense>}
       {tab === "files" && <FileManager server={server} trusted={trusted} />}
+      {tab === "docker" && <DockerManager server={server} trusted={trusted} />}
+      {tab === "services" && <SystemdManager server={server} trusted={trusted} />}
       {tab === "actions" && <QuickActions server={server} trusted={trusted} />}
     </section>
   );

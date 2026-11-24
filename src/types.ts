@@ -171,6 +171,67 @@ export interface SshConfigImport {
   warnings: string[];
 }
 
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  ports: string;
+  createdAt: string;
+  cpuPercent?: number;
+  memoryPercent?: number;
+  memoryUsage?: string;
+  pids?: number;
+}
+
+export interface DockerOverview {
+  version: string;
+  containers: DockerContainer[];
+}
+
+export type DockerAction = "start" | "stop" | "restart";
+
+export interface DockerActionResult {
+  containerId: string;
+  action: DockerAction;
+  output: string;
+  exitCode: number;
+}
+
+export interface DockerLogs {
+  containerId: string;
+  output: string;
+}
+
+export interface SystemdService {
+  name: string;
+  load: string;
+  active: string;
+  sub: string;
+  description: string;
+  enabled: string;
+}
+
+export interface SystemdOverview {
+  version: string;
+  services: SystemdService[];
+}
+
+export type SystemdAction = "start" | "stop" | "restart";
+
+export interface SystemdActionResult {
+  unit: string;
+  action: SystemdAction;
+  output: string;
+  exitCode: number;
+}
+
+export interface SystemdLogs {
+  unit: string;
+  output: string;
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;

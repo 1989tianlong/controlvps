@@ -242,3 +242,92 @@ pub struct SshConfigImport {
     pub skipped: usize,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub ports: String,
+    pub created_at: String,
+    pub cpu_percent: Option<f64>,
+    pub memory_percent: Option<f64>,
+    pub memory_usage: Option<String>,
+    pub pids: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerOverview {
+    pub version: String,
+    pub containers: Vec<DockerContainer>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerActionResult {
+    pub container_id: String,
+    pub action: DockerAction,
+    pub output: String,
+    pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerLogs {
+    pub container_id: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemdService {
+    pub name: String,
+    pub load: String,
+    pub active: String,
+    pub sub: String,
+    pub description: String,
+    pub enabled: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemdOverview {
+    pub version: String,
+    pub services: Vec<SystemdService>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemdAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemdActionResult {
+    pub unit: String,
+    pub action: SystemdAction,
+    pub output: String,
+    pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemdLogs {
+    pub unit: String,
+    pub output: String,
+}

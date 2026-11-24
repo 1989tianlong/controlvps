@@ -1,12 +1,14 @@
 mod batch;
 mod commands;
 mod db;
+mod docker;
 mod error;
 mod files;
 mod metrics;
 mod models;
 mod ssh;
 mod ssh_config;
+mod systemd;
 mod terminal;
 mod tunnel;
 
@@ -43,6 +45,12 @@ pub fn run() {
             commands::delete_server,
             commands::test_connection,
             commands::collect_metrics,
+            commands::list_docker_containers,
+            commands::run_docker_action,
+            commands::get_docker_logs,
+            commands::list_systemd_services,
+            commands::run_systemd_action,
+            commands::get_systemd_logs,
             commands::run_quick_action,
             commands::list_operation_logs,
             commands::list_snippets,

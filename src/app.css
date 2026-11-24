@@ -194,6 +194,15 @@
   .tunnel-rules { margin-top: var(--space-xl); }
   .section-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-md); }
   .section-heading .table-meta { margin-top: 0; }
+  .docker-filters { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-md) var(--space-lg); border-bottom: var(--rule-hair) solid var(--color-rule); }
+  .docker-skeleton { margin: var(--space-lg); min-height: 14rem; }
+  .docker-table { min-width: 50rem; }
+  .docker-table .table-meta { max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .docker-notice { margin-bottom: 0; }
+  .docker-no-match { display: grid; place-items: center; min-height: 12rem; color: var(--color-muted); }
+  .docker-no-match svg { margin-inline: auto; margin-bottom: var(--space-sm); }
+  .docker-logs { border-top: var(--rule-hair) solid var(--color-rule); }
+  .docker-log-output { margin: var(--space-lg); max-height: 26rem; }
   .terminal-shell { min-height: var(--terminal-height); padding: var(--space-sm); background: var(--color-paper-3); }
   .terminal-shell .xterm { height: 100%; }
   .terminal-empty { display: grid; place-items: center; min-height: var(--terminal-height); color: var(--color-muted); text-align: center; }

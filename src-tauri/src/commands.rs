@@ -6,16 +6,20 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::batch;
 use crate::db::Database;
+use crate::docker;
 use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, AuthMethod, BatchResult, ConnectionTest, FileListing, FileTransfer, OperationLog,
-    PortForwardInput, PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet,
-    SnippetInput, SshConfigImport, TerminalSession, TunnelStatus,
+    ActionResult, AuthMethod, BatchResult, ConnectionTest, DockerAction, DockerActionResult,
+    DockerLogs, DockerOverview, FileListing, FileTransfer, OperationLog, PortForwardInput,
+    PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet, SnippetInput,
+    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
+    TerminalSession, TunnelStatus,
 };
 use crate::ssh;
 use crate::ssh_config;
+use crate::systemd;
 use crate::terminal::{self, TerminalCommand, TerminalRegistry};
 use crate::tunnel::TunnelRegistry;
 
@@ -190,6 +194,125 @@ pub async fn collect_metrics(
     run_blocking(move || {
         let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
         metrics::collect(&server.id, &connection)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_docker_containers(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<DockerOverview> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        docker::list(&connection.session)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_docker_action(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    container_id: String,
+    action: DockerAction,
+    allow_unknown_host: bool,
+) -> CommandResult<DockerActionResult> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        docker::action(&connection.session, &container_id, action)
+    })
+    .await;
+    log_operation_result(&db, &id, "Docker 容器操作", &result, |output| {
+        format!("{:?}，退出码 {}", output.action, output.exit_code)
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn get_docker_logs(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    container_id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<DockerLogs> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        docker::logs(&connection.session, &container_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_systemd_services(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<SystemdOverview> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        systemd::list(&connection.session)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_systemd_action(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    unit: String,
+    action: SystemdAction,
+    allow_unknown_host: bool,
+) -> CommandResult<SystemdActionResult> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        systemd::action(&connection.session, &unit, action)
+    })
+    .await;
+    log_operation_result(&db, &id, "systemd 服务操作", &result, |output| {
+        format!(
+            "{:?} {}，退出码 {}",
+            output.action, output.unit, output.exit_code
+        )
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn get_systemd_logs(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    unit: String,
+    allow_unknown_host: bool,
+) -> CommandResult<SystemdLogs> {
+    let server = db.get_server(&id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        systemd::logs(&connection.session, &unit)
     })
     .await
 }

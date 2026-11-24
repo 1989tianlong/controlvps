@@ -5,6 +5,10 @@ import type {
   AppInfo,
   BatchResult,
   ConnectionTest,
+  DockerAction,
+  DockerActionResult,
+  DockerLogs,
+  DockerOverview,
   FileListing,
   FileTransfer,
   OperationLog,
@@ -17,6 +21,10 @@ import type {
   Snippet,
   SnippetInput,
   SshConfigImport,
+  SystemdAction,
+  SystemdActionResult,
+  SystemdLogs,
+  SystemdOverview,
   TerminalSession,
   TunnelStatus,
 } from "../types";
@@ -45,7 +53,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     if (["list_servers", "list_operation_logs", "list_snippets", "list_port_forwards", "list_tunnel_statuses"].includes(command)) return [] as T;
     if (command === "get_app_info") {
       return {
-        version: "0.4.0",
+        version: "0.5.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -77,6 +85,18 @@ export const api = {
     call<ConnectionTest>("test_connection", { id, allowUnknownHost }),
   collectMetrics: (id: string, allowUnknownHost = false) =>
     call<ServerMetrics>("collect_metrics", { id, allowUnknownHost }),
+  listDockerContainers: (id: string, allowUnknownHost = false) =>
+    call<DockerOverview>("list_docker_containers", { id, allowUnknownHost }),
+  runDockerAction: (id: string, containerId: string, action: DockerAction, allowUnknownHost = false) =>
+    call<DockerActionResult>("run_docker_action", { id, containerId, action, allowUnknownHost }),
+  getDockerLogs: (id: string, containerId: string, allowUnknownHost = false) =>
+    call<DockerLogs>("get_docker_logs", { id, containerId, allowUnknownHost }),
+  listSystemdServices: (id: string, allowUnknownHost = false) =>
+    call<SystemdOverview>("list_systemd_services", { id, allowUnknownHost }),
+  runSystemdAction: (id: string, unit: string, action: SystemdAction, allowUnknownHost = false) =>
+    call<SystemdActionResult>("run_systemd_action", { id, unit, action, allowUnknownHost }),
+  getSystemdLogs: (id: string, unit: string, allowUnknownHost = false) =>
+    call<SystemdLogs>("get_systemd_logs", { id, unit, allowUnknownHost }),
   quickAction: (id: string, action: QuickAction, allowUnknownHost = false) =>
     call<ActionResult>("run_quick_action", { id, action, allowUnknownHost }),
   operationLogs: (serverId?: string) => call<OperationLog[]>("list_operation_logs", { serverId }),
