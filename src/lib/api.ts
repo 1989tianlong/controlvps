@@ -4,6 +4,7 @@ import type {
   ActionResult,
   AppInfo,
   BatchResult,
+  ConnectionReport,
   ConnectionTest,
   DockerAction,
   DockerActionResult,
@@ -33,16 +34,19 @@ interface ErrorPayload {
   code: string;
   message: string;
   fingerprint?: string;
+  host?: string;
 }
 
 export class CommandError extends Error {
   code: string;
   fingerprint?: string;
+  host?: string;
 
   constructor(payload: ErrorPayload) {
     super(payload.message);
     this.code = payload.code;
     this.fingerprint = payload.fingerprint;
+    this.host = payload.host;
   }
 }
 
@@ -83,6 +87,8 @@ export const api = {
   deleteServer: (id: string) => call<void>("delete_server", { id }),
   testConnection: (id: string, allowUnknownHost = false) =>
     call<ConnectionTest>("test_connection", { id, allowUnknownHost }),
+  diagnoseConnection: (id: string, allowUnknownHost = false) =>
+    call<ConnectionReport>("diagnose_connection", { id, allowUnknownHost }),
   collectMetrics: (id: string, allowUnknownHost = false) =>
     call<ServerMetrics>("collect_metrics", { id, allowUnknownHost }),
   listDockerContainers: (id: string, allowUnknownHost = false) =>

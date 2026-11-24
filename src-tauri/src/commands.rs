@@ -11,11 +11,11 @@ use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, AuthMethod, BatchResult, ConnectionTest, DockerAction, DockerActionResult,
-    DockerLogs, DockerOverview, FileListing, FileTransfer, OperationLog, PortForwardInput,
-    PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet, SnippetInput,
-    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
-    TerminalSession, TunnelStatus,
+    ActionResult, AuthMethod, BatchResult, ConnectionReport, ConnectionTest, DockerAction,
+    DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer, OperationLog,
+    PortForwardInput, PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet,
+    SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs,
+    SystemdOverview, TerminalSession, TunnelStatus,
 };
 use crate::ssh;
 use crate::ssh_config;
@@ -119,6 +119,7 @@ pub fn import_ssh_config(db: State<'_, Database>, path: String) -> CommandResult
             cost: None,
             currency: None,
             expires_at: None,
+            jump_server_id: None,
         };
         match db.create_server(&input) {
             Ok(server) => {
@@ -158,6 +159,8 @@ pub fn delete_server(
     tunnels: State<'_, TunnelRegistry>,
     id: String,
 ) -> CommandResult<()> {
+    db.ensure_server_deletable(&id)
+        .map_err(CommandError::from)?;
     tunnels.stop_by_server(&id).map_err(CommandError::from)?;
     ssh::delete_credentials(&id).map_err(CommandError::from)?;
     db.delete_server(&id).map_err(Into::into)
@@ -170,13 +173,39 @@ pub async fn test_connection(
     id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<ConnectionTest> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
         let started = Instant::now();
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
-        ssh::test(&server, &connection, started)
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        ssh::test(&job.server, &connection, started)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn diagnose_connection(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ConnectionReport> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        ssh::diagnose(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )
     })
     .await
 }
@@ -188,12 +217,17 @@ pub async fn collect_metrics(
     id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<ServerMetrics> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
-        metrics::collect(&server.id, &connection)
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        metrics::collect(&job.server.id, &connection)
     })
     .await
 }
@@ -205,11 +239,16 @@ pub async fn list_docker_containers(
     id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<DockerOverview> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         docker::list(&connection.session)
     })
     .await
@@ -224,11 +263,16 @@ pub async fn run_docker_action(
     action: DockerAction,
     allow_unknown_host: bool,
 ) -> CommandResult<DockerActionResult> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         docker::action(&connection.session, &container_id, action)
     })
     .await;
@@ -246,11 +290,16 @@ pub async fn get_docker_logs(
     container_id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<DockerLogs> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         docker::logs(&connection.session, &container_id)
     })
     .await
@@ -263,11 +312,16 @@ pub async fn list_systemd_services(
     id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<SystemdOverview> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         systemd::list(&connection.session)
     })
     .await
@@ -282,11 +336,16 @@ pub async fn run_systemd_action(
     action: SystemdAction,
     allow_unknown_host: bool,
 ) -> CommandResult<SystemdActionResult> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         systemd::action(&connection.session, &unit, action)
     })
     .await;
@@ -307,11 +366,16 @@ pub async fn get_systemd_logs(
     unit: String,
     allow_unknown_host: bool,
 ) -> CommandResult<SystemdLogs> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         systemd::logs(&connection.session, &unit)
     })
     .await
@@ -325,15 +389,20 @@ pub async fn run_quick_action(
     action: QuickAction,
     allow_unknown_host: bool,
 ) -> CommandResult<ActionResult> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let action_name = format!("{action:?}");
     let command = quick_action_command(action).to_string();
     let command_for_task = command.clone();
     let result = run_blocking(move || {
         let started = Instant::now();
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         let output = ssh::execute(&connection.session, &command_for_task)?;
         let mut text = output.stdout;
         if !output.stderr.trim().is_empty() {
@@ -398,16 +467,16 @@ pub async fn start_port_forward(
     allow_unknown_host: bool,
 ) -> CommandResult<TunnelStatus> {
     let rule = db.get_port_forward(&id).map_err(CommandError::from)?;
-    let server = db.get_server(&rule.server_id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &rule.server_id)?;
     let known_hosts = paths.known_hosts.clone();
     let registry = tunnels.inner().clone();
     let server_id = rule.server_id.clone();
     let result = run_blocking(move || {
         registry.start(
             &rule,
-            &server,
-            &credentials,
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
             &known_hosts,
             allow_unknown_host,
         )
@@ -495,12 +564,7 @@ pub async fn run_batch_command(
     }
     let mut jobs = Vec::with_capacity(unique_ids.len());
     for id in unique_ids {
-        let server = db.get_server(&id).map_err(CommandError::from)?;
-        let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
-        jobs.push(batch::BatchJob {
-            server,
-            credentials,
-        });
+        jobs.push(connection_job(&db, &id)?);
     }
     let known_hosts = paths.known_hosts.clone();
     let result =
@@ -523,16 +587,16 @@ pub async fn open_terminal(
     id: String,
     allow_unknown_host: bool,
 ) -> CommandResult<TerminalSession> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
         let registry = app.state::<TerminalRegistry>();
         terminal::open(
             app.clone(),
             &registry,
-            &server,
-            &credentials,
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
             &known_hosts,
             allow_unknown_host,
         )
@@ -581,11 +645,16 @@ pub async fn list_remote_files(
     path: Option<String>,
     allow_unknown_host: bool,
 ) -> CommandResult<FileListing> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         files::list(&connection.session, path.as_deref())
     })
     .await
@@ -600,11 +669,16 @@ pub async fn create_remote_directory(
     name: String,
     allow_unknown_host: bool,
 ) -> CommandResult<String> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         files::create_directory(&connection.session, &parent, &name)
     })
     .await;
@@ -623,11 +697,16 @@ pub async fn rename_remote_file(
     new_name: String,
     allow_unknown_host: bool,
 ) -> CommandResult<String> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         files::rename(&connection.session, &path, &new_name)
     })
     .await;
@@ -646,12 +725,17 @@ pub async fn delete_remote_file(
     recursive: bool,
     allow_unknown_host: bool,
 ) -> CommandResult<()> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let summary_path = path.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         files::delete(&connection.session, &path, recursive)
     })
     .await;
@@ -671,11 +755,16 @@ pub async fn upload_remote_file(
     file_name: String,
     allow_unknown_host: bool,
 ) -> CommandResult<FileTransfer> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         files::upload(
             &connection.session,
             &local_path,
@@ -699,11 +788,16 @@ pub async fn download_remote_file(
     local_path: String,
     allow_unknown_host: bool,
 ) -> CommandResult<FileTransfer> {
-    let server = db.get_server(&id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let job = connection_job(&db, &id)?;
     let known_hosts = paths.known_hosts.clone();
     let result = run_blocking(move || {
-        let connection = ssh::connect(&server, &credentials, &known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
         files::download(&connection.session, &remote_path, &local_path)
     })
     .await;
@@ -711,6 +805,28 @@ pub async fn download_remote_file(
         format!("已下载 {}，{} 字节", transfer.remote_path, transfer.bytes)
     });
     result
+}
+
+fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {
+    let server = db.get_server(id).map_err(CommandError::from)?;
+    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
+    let jump_host = match server.jump_server_id.as_deref() {
+        Some(jump_id) => {
+            let jump_server = db.get_server(jump_id).map_err(CommandError::from)?;
+            let jump_credentials =
+                ssh::load_credentials(&jump_server).map_err(CommandError::from)?;
+            Some(ssh::JumpHost {
+                server: jump_server,
+                credentials: jump_credentials,
+            })
+        }
+        None => None,
+    };
+    Ok(ssh::ConnectionJob {
+        server,
+        credentials,
+        jump_host,
+    })
 }
 
 fn log_operation_result<T>(

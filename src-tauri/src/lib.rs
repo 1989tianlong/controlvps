@@ -44,6 +44,7 @@ pub fn run() {
             commands::update_server,
             commands::delete_server,
             commands::test_connection,
+            commands::diagnose_connection,
             commands::collect_metrics,
             commands::list_docker_containers,
             commands::run_docker_action,

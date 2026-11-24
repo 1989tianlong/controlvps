@@ -35,6 +35,7 @@ impl Database {
                 cost REAL,
                 currency TEXT,
                 expires_at TEXT,
+                jump_server_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 has_password INTEGER NOT NULL DEFAULT 0,
@@ -84,6 +85,14 @@ impl Database {
                 [],
             )?;
         }
+        let has_jump_server = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = 'jump_server_id')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_jump_server {
+            connection.execute("ALTER TABLE servers ADD COLUMN jump_server_id TEXT", [])?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -100,7 +109,7 @@ impl Database {
         let mut statement = connection.prepare(
             "SELECT id, name, host, port, username, auth_method, private_key_path,
                     group_name, tags, provider, region, notes, cost, currency,
-                    expires_at, created_at, updated_at, has_password, has_key_passphrase
+                    expires_at, jump_server_id, created_at, updated_at, has_password, has_key_passphrase
              FROM servers ORDER BY COALESCE(group_name, ''), name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], row_to_server)?;
@@ -113,7 +122,7 @@ impl Database {
             .query_row(
                 "SELECT id, name, host, port, username, auth_method, private_key_path,
                         group_name, tags, provider, region, notes, cost, currency,
-                        expires_at, created_at, updated_at, has_password, has_key_passphrase
+                        expires_at, jump_server_id, created_at, updated_at, has_password, has_key_passphrase
                  FROM servers WHERE id = ?1",
                 [id],
                 row_to_server,
@@ -129,12 +138,13 @@ impl Database {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let connection = self.connection()?;
+        validate_jump_server(&connection, &id, input.jump_server_id.as_deref())?;
         connection.execute(
             "INSERT INTO servers (
                 id, name, host, port, username, auth_method, private_key_path,
                 group_name, tags, provider, region, notes, cost, currency, expires_at,
-                created_at, updated_at, has_password, has_key_passphrase
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                jump_server_id, created_at, updated_at, has_password, has_key_passphrase
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 id,
                 input.name.trim(),
@@ -151,6 +161,7 @@ impl Database {
                 input.cost,
                 clean(input.currency.as_deref()),
                 clean(input.expires_at.as_deref()),
+                clean(input.jump_server_id.as_deref()),
                 now,
                 now,
                 input.password.as_deref().is_some_and(|value| !value.is_empty()),
@@ -173,11 +184,13 @@ impl Database {
             None => existing.has_key_passphrase,
         };
         let connection = self.connection()?;
+        validate_jump_server(&connection, id, input.jump_server_id.as_deref())?;
         connection.execute(
             "UPDATE servers SET name = ?2, host = ?3, port = ?4, username = ?5,
                 auth_method = ?6, private_key_path = ?7, group_name = ?8, tags = ?9,
                 provider = ?10, region = ?11, notes = ?12, cost = ?13, currency = ?14,
-                expires_at = ?15, updated_at = ?16, has_password = ?17, has_key_passphrase = ?18
+                expires_at = ?15, jump_server_id = ?16, updated_at = ?17,
+                has_password = ?18, has_key_passphrase = ?19
              WHERE id = ?1",
             params![
                 id,
@@ -195,6 +208,7 @@ impl Database {
                 input.cost,
                 clean(input.currency.as_deref()),
                 clean(input.expires_at.as_deref()),
+                clean(input.jump_server_id.as_deref()),
                 Utc::now().to_rfc3339(),
                 has_password,
                 has_key_passphrase,
@@ -204,7 +218,23 @@ impl Database {
         self.get_server(id)
     }
 
+    pub fn ensure_server_deletable(&self, id: &str) -> AppResult<()> {
+        let connection = self.connection()?;
+        let dependents = connection.query_row(
+            "SELECT COUNT(*) FROM servers WHERE jump_server_id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if dependents > 0 {
+            return Err(AppError::Message(format!(
+                "这台 VPS 正被 {dependents} 台服务器用作跳板机，请先修改它们的连接路由"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn delete_server(&self, id: &str) -> AppResult<()> {
+        self.ensure_server_deletable(id)?;
         self.connection()?
             .execute("DELETE FROM servers WHERE id = ?1", [id])?;
         Ok(())
@@ -425,6 +455,45 @@ fn validate_snippet(input: &SnippetInput) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_jump_server(
+    connection: &Connection,
+    server_id: &str,
+    jump_server_id: Option<&str>,
+) -> AppResult<()> {
+    let Some(jump_server_id) = clean(jump_server_id) else {
+        return Ok(());
+    };
+    if jump_server_id == server_id {
+        return Err(AppError::Message("服务器不能使用自身作为跳板机".into()));
+    }
+    let dependents = connection.query_row(
+        "SELECT COUNT(*) FROM servers WHERE jump_server_id = ?1",
+        [server_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if dependents > 0 {
+        return Err(AppError::Message(
+            "这台 VPS 正作为其他服务器的跳板机，不能再配置上级跳板".into(),
+        ));
+    }
+    let nested = connection
+        .query_row(
+            "SELECT jump_server_id FROM servers WHERE id = ?1",
+            [&jump_server_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => AppError::Message("所选跳板机不存在".into()),
+            other => other.into(),
+        })?;
+    if nested.is_some() {
+        return Err(AppError::Message(
+            "当前支持一级跳板，请选择直接联网的 VPS 作为跳板机".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_server(input: &ServerInput) -> AppResult<()> {
     if input.name.trim().is_empty()
         || input.host.trim().is_empty()
@@ -480,10 +549,11 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
         cost: row.get(12)?,
         currency: row.get(13)?,
         expires_at: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
-        has_password: row.get(17)?,
-        has_key_passphrase: row.get(18)?,
+        jump_server_id: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+        has_password: row.get(18)?,
+        has_key_passphrase: row.get(19)?,
     })
 }
 

@@ -22,6 +22,7 @@ export interface ServerInput {
   cost?: number;
   currency?: string;
   expiresAt?: string;
+  jumpServerId?: string;
 }
 
 export interface Server extends Omit<ServerInput, "password" | "keyPassphrase"> {
@@ -36,6 +37,24 @@ export interface ConnectionTest {
   success: boolean;
   message: string;
   latencyMs: number;
+  hostname: string;
+  os: string;
+  fingerprint: string;
+}
+
+export interface DiagnosticStep {
+  name: string;
+  success: boolean;
+  detail: string;
+  durationMs: number;
+}
+
+export interface ConnectionReport {
+  success: boolean;
+  message: string;
+  latencyMs: number;
+  route: string[];
+  steps: DiagnosticStep[];
   hostname: string;
   os: string;
   fingerprint: string;

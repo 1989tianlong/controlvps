@@ -16,12 +16,13 @@ const emptyForm: ServerInput = {
 
 interface Props {
   server: Server | null;
+  servers: Server[];
   open: boolean;
   onClose: () => void;
   onSaved: (server: Server) => void;
 }
 
-export function ServerForm({ server, open, onClose, onSaved }: Props) {
+export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<ServerInput>(emptyForm);
   const [busy, setBusy] = useState(false);
@@ -45,6 +46,7 @@ export function ServerForm({ server, open, onClose, onSaved }: Props) {
       cost: server.cost,
       currency: server.currency ?? "USD",
       expiresAt: server.expiresAt ?? "",
+      jumpServerId: server.jumpServerId ?? "",
     } : emptyForm);
     dialogRef.current?.showModal();
   }, [open, server]);
@@ -110,6 +112,17 @@ export function ServerForm({ server, open, onClose, onSaved }: Props) {
                 <label htmlFor="server-user">用户名，必填</label>
                 <input className="input" id="server-user" name="username" autoComplete="off" required value={form.username} onChange={(e) => update("username", e.target.value)} />
               </div>
+            </div>
+          </section>
+          <section className="form-section">
+            <h2>连接路由</h2>
+            <div className="field">
+              <label htmlFor="jump-server">跳板机</label>
+              <select className="select w-full" id="jump-server" name="jumpServerId" value={form.jumpServerId ?? ""} onChange={(e) => update("jumpServerId", e.target.value || undefined)}>
+                <option value="">直接连接</option>
+                {servers.filter((item) => item.id !== server?.id && !item.jumpServerId).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.host}:{item.port}</option>)}
+              </select>
+              <p className="field-help">先通过本机连接跳板机，再由跳板机访问目标 SSH 端口。当前支持一级跳板，两台服务器分别校验主机密钥并使用各自凭据。</p>
             </div>
           </section>
           <section className="form-section">

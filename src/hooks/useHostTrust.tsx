@@ -6,6 +6,7 @@ import type { Server } from "../types";
 interface Challenge {
   server: Server;
   fingerprint: string;
+  host: string;
   operation: (allow: boolean) => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
@@ -32,6 +33,7 @@ export function useHostTrust() {
             setChallenge({
               server,
               fingerprint: reason.fingerprint ?? "指纹不可用",
+              host: reason.host ?? `${server.host}:${server.port}`,
               operation,
               resolve: resolve as (value: unknown) => void,
               reject,
@@ -57,9 +59,17 @@ export function useHostTrust() {
       challenge.resolve(result);
       setChallenge(null);
     } catch (reason) {
-      challenge.reject(reason);
-      setError(reason instanceof Error ? reason.message : String(reason));
-      setChallenge(null);
+      if (reason instanceof CommandError && reason.code === "HOST_KEY_UNKNOWN") {
+        setChallenge({
+          ...challenge,
+          fingerprint: reason.fingerprint ?? "指纹不可用",
+          host: reason.host ?? challenge.host,
+        });
+      } else {
+        challenge.reject(reason);
+        setError(reason instanceof Error ? reason.message : String(reason));
+        setChallenge(null);
+      }
     } finally {
       setBusy(false);
     }
@@ -73,7 +83,7 @@ export function useHostTrust() {
       </div>
       <div className="dialog-body">
         <ShieldAlert size={28} color="var(--color-accent)" aria-hidden="true" />
-        <p className="mt-3">第一次连接 <strong>{challenge?.server.name}</strong>。请通过服务商控制台或其他可信渠道核对 SSH 主机密钥指纹。</p>
+        <p className="mt-3">正在连接 <strong>{challenge?.host ?? challenge?.server.name}</strong>。请通过服务商控制台或其他可信渠道核对这一跳的 SSH 主机密钥指纹。</p>
         <code className="fingerprint">{challenge?.fingerprint}</code>
         <p className="text-muted text-sm">确认后指纹会写入本机 known_hosts。后续指纹变化时 ControlVPS 会拒绝连接。</p>
         {error && <p className="error-banner" role="alert">{error}</p>}

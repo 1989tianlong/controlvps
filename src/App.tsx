@@ -92,7 +92,7 @@ export default function App() {
         {page === "settings" && <SettingsPage />}
       </div>
     </main>
-    <ServerForm server={editing} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />
+    <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />
     {trustDialog}
   </div>;
 }

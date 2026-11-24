@@ -2,17 +2,21 @@ import { lazy, Suspense, useState } from "react";
 import { Activity, Clock3, HardDrive, List, Power, RefreshCw, ScrollText, Server as ServerIcon, Trash2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime, formatUptime, percent } from "../lib/format";
-import type { ActionResult, QuickAction, Server, ServerMetrics, TrustedExecutor } from "../types";
+import type { ActionResult, ConnectionReport, QuickAction, Server, ServerMetrics, TrustedExecutor } from "../types";
+import { ConnectionDiagnostics } from "./ConnectionDiagnostics";
 import { FileManager } from "./FileManager";
 import { DockerManager } from "./DockerManager";
 import { SystemdManager } from "./SystemdManager";
 
 const TerminalView = lazy(() => import("./TerminalView").then((module) => ({ default: module.TerminalView })));
 
-export type DetailTab = "overview" | "terminal" | "files" | "docker" | "services" | "actions";
+export type DetailTab = "overview" | "diagnostics" | "terminal" | "files" | "docker" | "services" | "actions";
 
 interface Props {
   server: Server;
+  jumpServer?: Server;
+  diagnostics?: ConnectionReport;
+  onDiagnose: () => void;
   metrics?: ServerMetrics;
   metricsError?: string;
   tab: DetailTab;
@@ -22,15 +26,16 @@ interface Props {
   trusted: TrustedExecutor;
 }
 
-export function ServerDetail({ server, metrics, metricsError, tab, onTabChange, onRefresh, refreshing, trusted }: Props) {
+export function ServerDetail({ server, jumpServer, diagnostics, onDiagnose, metrics, metricsError, tab, onTabChange, onRefresh, refreshing, trusted }: Props) {
   return (
     <section className="panel server-detail" aria-label={`${server.name} 详情`}>
       <div className="panel-header">
-        <div><h2>{server.name}</h2><span className="table-meta">{server.username}@{server.host}:{server.port}</span></div>
+        <div><h2>{server.name}</h2><span className="table-meta">{server.username}@{server.host}:{server.port}{jumpServer ? ` · 经 ${jumpServer.name} 跳板` : " · 直接连接"}</span></div>
         <button className="btn" type="button" onClick={onRefresh} disabled={refreshing} aria-busy={refreshing}><RefreshCw size={15} />{refreshing ? "正在采集" : "刷新指标"}</button>
       </div>
       <div className="tabs" role="tablist" aria-label="服务器工作区">
         <button className="tab" type="button" role="tab" aria-selected={tab === "overview"} onClick={() => onTabChange("overview")}>概览</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "diagnostics"} onClick={() => onTabChange("diagnostics")}>连接诊断</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "terminal"} onClick={() => onTabChange("terminal")}>SSH 终端</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "files"} onClick={() => onTabChange("files")}>文件管理</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "docker"} onClick={() => onTabChange("docker")}>Docker</button>
@@ -38,6 +43,7 @@ export function ServerDetail({ server, metrics, metricsError, tab, onTabChange, 
         <button className="tab" type="button" role="tab" aria-selected={tab === "actions"} onClick={() => onTabChange("actions")}>快捷运维</button>
       </div>
       {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
+      {tab === "diagnostics" && <ConnectionDiagnostics report={diagnostics} error={metricsError} busy={refreshing} onRun={onDiagnose} />}
       {tab === "terminal" && <Suspense fallback={<div className="terminal-empty">正在加载终端组件</div>}><TerminalView server={server} trusted={trusted} /></Suspense>}
       {tab === "files" && <FileManager server={server} trusted={trusted} />}
       {tab === "docker" && <DockerManager server={server} trusted={trusted} />}

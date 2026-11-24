@@ -5,15 +5,10 @@ use std::time::Instant;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{BatchExecutionResult, BatchResult, Server};
-use crate::ssh::{self, Credentials};
-
-pub struct BatchJob {
-    pub server: Server,
-    pub credentials: Credentials,
-}
+use crate::ssh::{self, ConnectionJob};
 
 pub fn execute(
-    jobs: Vec<BatchJob>,
+    jobs: Vec<ConnectionJob>,
     template: String,
     known_hosts: PathBuf,
     concurrency: usize,
@@ -53,18 +48,24 @@ pub fn execute(
     })
 }
 
-fn execute_job(job: &BatchJob, template: &str, known_hosts: &PathBuf) -> BatchExecutionResult {
+fn execute_job(job: &ConnectionJob, template: &str, known_hosts: &PathBuf) -> BatchExecutionResult {
     let started = Instant::now();
     let command = render_command(template, &job.server);
-    let result =
-        ssh::connect(&job.server, &job.credentials, known_hosts, false).and_then(|connection| {
-            let output = ssh::execute(&connection.session, &command)?;
-            let mut text = output.stdout;
-            if !output.stderr.trim().is_empty() {
-                text.push_str(&output.stderr);
-            }
-            Ok((text, output.exit_code))
-        });
+    let result = ssh::connect(
+        &job.server,
+        &job.credentials,
+        job.jump_host.as_ref(),
+        known_hosts,
+        false,
+    )
+    .and_then(|connection| {
+        let output = ssh::execute(&connection.session, &command)?;
+        let mut text = output.stdout;
+        if !output.stderr.trim().is_empty() {
+            text.push_str(&output.stderr);
+        }
+        Ok((text, output.exit_code))
+    });
     let (output, exit_code, success, error) = match result {
         Ok((output, exit_code)) => (output, Some(exit_code), exit_code == 0, None),
         Err(error) => (String::new(), None, false, Some(error.to_string())),

@@ -3,21 +3,20 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use ssh2::Session;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{PortForwardKind, PortForwardRule, Server, TunnelStatus};
-use crate::ssh::{self, Credentials};
+use crate::ssh::{self, Credentials, JumpHost, SshConnection};
 
 struct TunnelHandle {
     server_id: String,
     local_endpoint: String,
     stop: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
-    session: Arc<Mutex<Session>>,
+    session: Arc<Mutex<SshConnection>>,
     active_connections: Arc<AtomicUsize>,
     total_connections: Arc<AtomicU64>,
     started_at: String,
@@ -34,6 +33,7 @@ impl TunnelRegistry {
         rule: &PortForwardRule,
         server: &Server,
         credentials: &Credentials,
+        jump_host: Option<&JumpHost>,
         known_hosts: &std::path::Path,
         allow_unknown_host: bool,
     ) -> AppResult<TunnelStatus> {
@@ -45,12 +45,18 @@ impl TunnelRegistry {
         {
             return Err(AppError::Message("这条隧道已经在运行".into()));
         }
-        let connection = ssh::connect(server, credentials, known_hosts, allow_unknown_host)?;
+        let connection = ssh::connect(
+            server,
+            credentials,
+            jump_host,
+            known_hosts,
+            allow_unknown_host,
+        )?;
         connection.session.set_blocking(false);
         let listener = TcpListener::bind((rule.listen_address.as_str(), rule.listen_port))?;
         listener.set_nonblocking(true)?;
         let local_endpoint = listener.local_addr()?.to_string();
-        let session = Arc::new(Mutex::new(connection.session));
+        let session = Arc::new(Mutex::new(connection));
         let handle = TunnelHandle {
             server_id: server.id.clone(),
             local_endpoint,
@@ -108,8 +114,8 @@ impl TunnelRegistry {
             return Ok(());
         };
         handle.stop.store(true, Ordering::Release);
-        if let Ok(session) = handle.session.lock() {
-            let _ = session.disconnect(None, "ControlVPS tunnel stopped", None);
+        if let Ok(connection) = handle.session.lock() {
+            connection.disconnect();
         }
         let _ = TcpStream::connect(&handle.local_endpoint);
         for _ in 0..200 {
@@ -149,13 +155,20 @@ impl TunnelRegistry {
 
 fn run_listener(
     listener: TcpListener,
-    session: Arc<Mutex<Session>>,
+    session: Arc<Mutex<SshConnection>>,
     rule: &PortForwardRule,
     stop: Arc<AtomicBool>,
     active_connections: Arc<AtomicUsize>,
     total_connections: Arc<AtomicU64>,
 ) {
+    let mut last_keepalive = Instant::now();
     while !stop.load(Ordering::Acquire) {
+        if last_keepalive.elapsed() >= Duration::from_secs(5) {
+            if let Ok(connection) = session.lock() {
+                let _ = connection.send_keepalive();
+            }
+            last_keepalive = Instant::now();
+        }
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = stream.set_nodelay(true);
@@ -187,7 +200,7 @@ fn run_listener(
 
 fn handle_connection(
     stream: TcpStream,
-    session: Arc<Mutex<Session>>,
+    session: Arc<Mutex<SshConnection>>,
     destination_host: &str,
     destination_port: u16,
 ) {
@@ -197,7 +210,7 @@ fn handle_connection(
     relay(stream, channel);
 }
 
-fn handle_socks5_connection(mut stream: TcpStream, session: Arc<Mutex<Session>>) {
+fn handle_socks5_connection(mut stream: TcpStream, session: Arc<Mutex<SshConnection>>) {
     let Some((destination_host, destination_port)) = socks5_connect(&mut stream) else {
         return;
     };
@@ -272,14 +285,18 @@ fn socks5_connect(stream: &mut TcpStream) -> Option<(String, u16)> {
 }
 
 fn open_channel(
-    session: &Arc<Mutex<Session>>,
+    session: &Arc<Mutex<SshConnection>>,
     destination_host: &str,
     destination_port: u16,
 ) -> Option<ssh2::Channel> {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         let result = match session.lock() {
-            Ok(session) => session.channel_direct_tcpip(destination_host, destination_port, None),
+            Ok(connection) => {
+                connection
+                    .session
+                    .channel_direct_tcpip(destination_host, destination_port, None)
+            }
             Err(_) => return None,
         };
         match result {

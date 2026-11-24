@@ -27,6 +27,7 @@ pub struct ServerInput {
     pub cost: Option<f64>,
     pub currency: Option<String>,
     pub expires_at: Option<String>,
+    pub jump_server_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +48,7 @@ pub struct Server {
     pub cost: Option<f64>,
     pub currency: Option<String>,
     pub expires_at: Option<String>,
+    pub jump_server_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub has_password: bool,
@@ -59,6 +61,28 @@ pub struct ConnectionTest {
     pub success: bool,
     pub message: String,
     pub latency_ms: u64,
+    pub hostname: String,
+    pub os: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticStep {
+    pub name: String,
+    pub success: bool,
+    pub detail: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionReport {
+    pub success: bool,
+    pub message: String,
+    pub latency_ms: u64,
+    pub route: Vec<String>,
+    pub steps: Vec<DiagnosticStep>,
     pub hostname: String,
     pub os: String,
     pub fingerprint: String,

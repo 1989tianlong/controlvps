@@ -203,6 +203,26 @@
   .docker-no-match svg { margin-inline: auto; margin-bottom: var(--space-sm); }
   .docker-logs { border-top: var(--rule-hair) solid var(--color-rule); }
   .docker-log-output { margin: var(--space-lg); max-height: 26rem; }
+  .diagnostic-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-lg); }
+  .diagnostic-heading p { margin-top: var(--space-xs); color: var(--color-muted); font-size: var(--text-sm); }
+  .diagnostic-empty { display: grid; place-items: center; min-height: 12rem; color: var(--color-muted); text-align: center; }
+  .diagnostic-empty p { margin-top: var(--space-sm); }
+  .diagnostic-skeleton { min-height: 12rem; margin-top: var(--space-lg); }
+  .diagnostic-report { margin-top: var(--space-lg); }
+  .diagnostic-summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); }
+  .diagnostic-message { margin-top: var(--space-sm); color: var(--color-ink-2); }
+  .diagnostic-route { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-xs); margin-block: var(--space-lg); }
+  .diagnostic-route > span { display: inline-flex; align-items: center; gap: var(--space-xs); }
+  .diagnostic-route code { padding: var(--space-2xs) var(--space-xs); background: var(--color-paper-3); color: var(--color-cool); font-family: var(--font-outlier); font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .diagnostic-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border-block: var(--rule-hair) solid var(--color-rule); }
+  .diagnostic-steps li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--space-sm); padding-block: var(--space-md); border-bottom: var(--rule-hair) solid var(--color-rule); }
+  .diagnostic-steps li:last-child { border-bottom: 0; }
+  .diagnostic-steps li > svg { margin-top: var(--space-2xs); }
+  .diagnostic-steps .is-success > svg { color: var(--color-ok); }
+  .diagnostic-steps .is-failed > svg { color: var(--color-bad); }
+  .diagnostic-steps p { margin-top: var(--space-2xs); color: var(--color-muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .diagnostic-steps .is-failed p { color: var(--color-bad); }
+  .fingerprint-text { font-family: var(--font-outlier); font-size: var(--text-sm); }
   .terminal-shell { min-height: var(--terminal-height); padding: var(--space-sm); background: var(--color-paper-3); }
   .terminal-shell .xterm { height: 100%; }
   .terminal-empty { display: grid; place-items: center; min-height: var(--terminal-height); color: var(--color-muted); text-align: center; }

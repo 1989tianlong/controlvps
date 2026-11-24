@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Cable, Container, FileInput, FolderOpen, Pencil, Plus, RefreshCw, Search, Server as ServerIcon, Settings2, TerminalSquare, Trash2 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage } from "../lib/api";
-import type { Server, ServerMetrics, TrustedExecutor } from "../types";
+import type { ConnectionReport, Server, ServerMetrics, TrustedExecutor } from "../types";
 import { ServerDetail, type DetailTab } from "./ServerDetail";
 
 interface Props {
@@ -23,6 +23,7 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
   const [tab, setTab] = useState<DetailTab>("overview");
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [diagnostics, setDiagnostics] = useState<Record<string, ConnectionReport>>({});
   const [notice, setNotice] = useState("");
   const groups = useMemo(() => [...new Set(servers.map((server) => server.groupName).filter((value): value is string => Boolean(value)))], [servers]);
   const filtered = servers.filter((server) => {
@@ -59,9 +60,13 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
   const test = async (server: Server) => {
     setBusy(server.id);
     setNotice("");
+    setErrors((current) => ({ ...current, [server.id]: "" }));
+    setSelectedId(server.id);
+    setTab("diagnostics");
     try {
-      const result = await trusted(server, (allow) => api.testConnection(server.id, allow));
-      setNotice(`${server.name}：${result.message}，${result.latencyMs} ms，${result.os || result.hostname}`);
+      const result = await trusted(server, (allow) => api.diagnoseConnection(server.id, allow));
+      setDiagnostics((current) => ({ ...current, [server.id]: result }));
+      setNotice(`${server.name}：${result.message}，${result.latencyMs} ms`);
     } catch (reason) {
       setErrors((current) => ({ ...current, [server.id]: errorMessage(reason) }));
     } finally {
@@ -117,7 +122,7 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
             <td>{server.groupName || "未分组"}</td>
             <td><span className={reading ? "badge badge-ok" : error ? "badge badge-bad" : "badge"}>{reading ? "在线" : error ? "连接失败" : "未检查"}</span>{error && <span className="table-meta" title={error}>查看详情</span>}</td>
             <td className="measured">{reading ? `${reading.cpuUsage.toFixed(1)}% / ${reading.memoryTotal ? (reading.memoryUsed / reading.memoryTotal * 100).toFixed(1) : 0}%` : "无读数"}</td>
-            <td>{{ key: "私钥", password: "密码", agent: "Agent" }[server.authMethod]}</td>
+            <td>{{ key: "私钥", password: "密码", agent: "Agent" }[server.authMethod]}{server.jumpServerId && <span className="table-meta">经跳板机</span>}</td>
             <td><div className="row-actions">
               <button className="icon-btn" type="button" title="测试连接" aria-label={`测试 ${server.name}`} disabled={busy === server.id} onClick={() => test(server)}><Cable size={16} /></button>
               <button className="icon-btn" type="button" title="刷新指标" aria-label={`刷新 ${server.name} 指标`} disabled={busy === server.id} onClick={() => refresh(server)}><RefreshCw size={16} /></button>
@@ -132,6 +137,6 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
         })}
       </tbody></table>
     </div>}
-    {selected && <ServerDetail server={selected} metrics={metrics[selected.id]} metricsError={errors[selected.id]} tab={tab} onTabChange={setTab} onRefresh={() => refresh(selected)} refreshing={busy === selected.id} trusted={trusted} />}
+    {selected && <ServerDetail server={selected} jumpServer={servers.find((server) => server.id === selected.jumpServerId)} diagnostics={diagnostics[selected.id]} onDiagnose={() => void test(selected)} metrics={metrics[selected.id]} metricsError={errors[selected.id]} tab={tab} onTabChange={setTab} onRefresh={() => refresh(selected)} refreshing={busy === selected.id} trusted={trusted} />}
   </>;
 }
