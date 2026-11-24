@@ -53,7 +53,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     if (["list_servers", "list_operation_logs", "list_snippets", "list_port_forwards", "list_tunnel_statuses"].includes(command)) return [] as T;
     if (command === "get_app_info") {
       return {
-        version: "0.5.0",
+        version: "0.6.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",

@@ -9,7 +9,7 @@ use chrono::Utc;
 use ssh2::Session;
 
 use crate::error::{AppError, AppResult};
-use crate::models::{PortForwardRule, Server, TunnelStatus};
+use crate::models::{PortForwardKind, PortForwardRule, Server, TunnelStatus};
 use crate::ssh::{self, Credentials};
 
 struct TunnelHandle {
@@ -159,14 +159,21 @@ fn run_listener(
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = stream.set_nodelay(true);
+                let _ = stream.set_nonblocking(true);
                 total_connections.fetch_add(1, Ordering::Relaxed);
                 active_connections.fetch_add(1, Ordering::Relaxed);
                 let session = session.clone();
+                let kind = rule.kind;
                 let destination_host = rule.destination_host.clone();
                 let destination_port = rule.destination_port;
                 let active_connections = active_connections.clone();
                 std::thread::spawn(move || {
-                    handle_connection(stream, session, &destination_host, destination_port);
+                    match kind {
+                        PortForwardKind::Local => {
+                            handle_connection(stream, session, &destination_host, destination_port)
+                        }
+                        PortForwardKind::Dynamic => handle_socks5_connection(stream, session),
+                    }
                     active_connections.fetch_sub(1, Ordering::Relaxed);
                 });
             }
@@ -184,25 +191,114 @@ fn handle_connection(
     destination_host: &str,
     destination_port: u16,
 ) {
+    let Some(channel) = open_channel(&session, destination_host, destination_port) else {
+        return;
+    };
+    relay(stream, channel);
+}
+
+fn handle_socks5_connection(mut stream: TcpStream, session: Arc<Mutex<Session>>) {
+    let Some((destination_host, destination_port)) = socks5_connect(&mut stream) else {
+        return;
+    };
+    let Some(channel) = open_channel(&session, &destination_host, destination_port) else {
+        write_all_retry(&mut stream, &[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
+        return;
+    };
+    if !write_all_retry(&mut stream, &[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]) {
+        return;
+    }
+    relay(stream, channel);
+}
+
+fn socks5_connect(stream: &mut TcpStream) -> Option<(String, u16)> {
+    let mut greeting = [0_u8; 2];
+    if !read_exact_retry(stream, &mut greeting) || greeting[0] != 5 || greeting[1] == 0 {
+        return None;
+    }
+    let mut methods = vec![0_u8; greeting[1] as usize];
+    if !read_exact_retry(stream, &mut methods) || !methods.contains(&0) {
+        write_all_retry(stream, &[5, 0xff]);
+        return None;
+    }
+    if !write_all_retry(stream, &[5, 0]) {
+        return None;
+    }
+
+    let mut request = [0_u8; 4];
+    if !read_exact_retry(stream, &mut request) || request[0] != 5 || request[2] != 0 {
+        return None;
+    }
+    if request[1] != 1 {
+        write_all_retry(stream, &[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]);
+        return None;
+    }
+    let host = match request[3] {
+        1 => {
+            let mut address = [0_u8; 4];
+            if !read_exact_retry(stream, &mut address) {
+                return None;
+            }
+            std::net::Ipv4Addr::from(address).to_string()
+        }
+        3 => {
+            let mut length = [0_u8; 1];
+            if !read_exact_retry(stream, &mut length) || length[0] == 0 {
+                return None;
+            }
+            let mut domain = vec![0_u8; length[0] as usize];
+            if !read_exact_retry(stream, &mut domain) {
+                return None;
+            }
+            String::from_utf8(domain).ok()?
+        }
+        4 => {
+            let mut address = [0_u8; 16];
+            if !read_exact_retry(stream, &mut address) {
+                return None;
+            }
+            std::net::Ipv6Addr::from(address).to_string()
+        }
+        _ => {
+            write_all_retry(stream, &[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]);
+            return None;
+        }
+    };
+    let mut port = [0_u8; 2];
+    if !read_exact_retry(stream, &mut port) {
+        return None;
+    }
+    Some((host, u16::from_be_bytes(port)))
+}
+
+fn open_channel(
+    session: &Arc<Mutex<Session>>,
+    destination_host: &str,
+    destination_port: u16,
+) -> Option<ssh2::Channel> {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    let channel = loop {
+    loop {
         let result = match session.lock() {
             Ok(session) => session.channel_direct_tcpip(destination_host, destination_port, None),
-            Err(_) => return,
+            Err(_) => return None,
         };
         match result {
-            Ok(channel) => break channel,
+            Ok(channel) => return Some(channel),
             Err(error) => {
-                if std::io::Error::from(error).kind() != ErrorKind::WouldBlock {
-                    return;
+                let error = std::io::Error::from(error);
+                if error.kind() != ErrorKind::WouldBlock {
+                    return None;
                 }
                 if std::time::Instant::now() >= deadline {
-                    return;
+                    return None;
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
-    };
+    }
+}
+
+fn relay(stream: TcpStream, channel: ssh2::Channel) {
     let Ok(mut local_reader) = stream.try_clone() else {
         return;
     };
@@ -218,6 +314,42 @@ fn handle_connection(
             let _ = local_writer.shutdown(Shutdown::Both);
         });
     });
+}
+
+fn read_exact_retry(stream: &mut TcpStream, mut buffer: &mut [u8]) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !buffer.is_empty() {
+        match stream.read(buffer) {
+            Ok(0) => return false,
+            Ok(count) => buffer = &mut buffer[count..],
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+fn write_all_retry(stream: &mut TcpStream, mut buffer: &[u8]) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !buffer.is_empty() {
+        match stream.write(buffer) {
+            Ok(0) => return false,
+            Ok(count) => buffer = &buffer[count..],
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 fn pump<R: Read, W: Write>(reader: &mut R, writer: &mut W) {

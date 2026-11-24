@@ -141,9 +141,12 @@ export interface BatchResult {
   durationMs: number;
 }
 
+export type PortForwardKind = "local" | "dynamic";
+
 export interface PortForwardInput {
   name: string;
   serverId: string;
+  kind: PortForwardKind;
   listenAddress: string;
   listenPort: number;
   destinationHost: string;

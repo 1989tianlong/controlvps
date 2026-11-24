@@ -7,6 +7,7 @@ import type { PortForwardInput, PortForwardRule, Server, TrustedExecutor, Tunnel
 const initialForm: PortForwardInput = {
   name: "",
   serverId: "",
+  kind: "local",
   listenAddress: "127.0.0.1",
   listenPort: 8080,
   destinationHost: "127.0.0.1",
@@ -59,7 +60,7 @@ export function TunnelsPage({ servers, trusted, onAdd }: Props) {
       await api.createPortForward(form);
       setForm({ ...initialForm, serverId: form.serverId });
       await load();
-      setNotice("端口转发规则已保存，启动后才会监听本地端口");
+      setNotice(`${form.kind === "dynamic" ? "SOCKS5 动态转发" : "本地端口转发"}规则已保存，启动后才会监听本地端口`);
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(""); }
   };
@@ -71,7 +72,7 @@ export function TunnelsPage({ servers, trusted, onAdd }: Props) {
     setNotice("");
     try {
       const status = await trusted(server, (allow) => api.startPortForward(rule.id, allow));
-      setNotice(`${rule.name} 已监听 ${status.localEndpoint}`);
+      setNotice(`${rule.name} 已监听 ${status.localEndpoint}${rule.kind === "dynamic" ? "，客户端代理类型请选择 SOCKS5" : ""}`);
       await refreshStatuses();
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(""); }
@@ -101,8 +102,8 @@ export function TunnelsPage({ servers, trusted, onAdd }: Props) {
 
   const statusMap = new Map(statuses.map((status) => [status.ruleId, status]));
   return <>
-    <div className="page-heading"><div><h1>隧道中心</h1><p>通过 SSH 将 VPS 可达的 TCP 服务安全映射到本机。</p></div><button className="btn" type="button" onClick={() => void load()} disabled={loading || busy !== ""}><RefreshCw size={16} />刷新状态</button></div>
-    <div className="risk tunnel-note"><Network size={20} /><p>当前支持本地端口转发。目标地址从 VPS 视角解析，例如目标 <code>127.0.0.1:5432</code> 是 VPS 自己的 PostgreSQL，而不是你的 Mac。</p></div>
+    <div className="page-heading"><div><h1>隧道中心</h1><p>通过 SSH 使用本地端口转发或动态 SOCKS5 代理。</p></div><button className="btn" type="button" onClick={() => void load()} disabled={loading || busy !== ""}><RefreshCw size={16} />刷新状态</button></div>
+    <div className="risk tunnel-note"><Network size={20} /><p>本地转发将固定服务映射到本机，目标地址从 VPS 视角解析；动态转发提供标准 SOCKS5 代理，由 VPS 连接客户端请求的目标并解析域名。</p></div>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {notice && <div className="file-notice automation-notice" role="status">{notice}</div>}
     <section className="panel tunnel-form-panel">
@@ -111,11 +112,12 @@ export function TunnelsPage({ servers, trusted, onAdd }: Props) {
         <div className="panel-body tunnel-form-grid">
           <div className="field span-2"><label htmlFor="tunnel-name">规则名称</label><input id="tunnel-name" className="input" required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：生产数据库" /></div>
           <div className="field span-2"><label htmlFor="tunnel-server">SSH 服务器</label><select id="tunnel-server" className="select" required value={form.serverId} onChange={(event) => setForm({ ...form, serverId: event.target.value })}>{servers.map((server) => <option key={server.id} value={server.id}>{server.name} · {server.host}</option>)}</select></div>
+          <div className="field span-2"><label htmlFor="tunnel-kind">转发类型</label><select id="tunnel-kind" className="select" value={form.kind} onChange={(event) => { const kind = event.target.value as PortForwardInput["kind"]; setForm({ ...form, kind, destinationHost: kind === "dynamic" ? "" : form.destinationHost || "127.0.0.1", destinationPort: kind === "dynamic" ? 0 : form.destinationPort || 80 }); }}><option value="local">本地端口转发 · 固定目标</option><option value="dynamic">动态转发 · SOCKS5 代理</option></select></div>
           <div className="field"><label htmlFor="tunnel-listen-address">本地监听地址</label><input id="tunnel-listen-address" className="input" required value={form.listenAddress} onChange={(event) => setForm({ ...form, listenAddress: event.target.value })} /></div>
           <div className="field"><label htmlFor="tunnel-listen-port">本地端口</label><input id="tunnel-listen-port" className="input" type="number" min={1} max={65535} required value={form.listenPort} onChange={(event) => setForm({ ...form, listenPort: Number(event.target.value) })} /></div>
-          <div className="field"><label htmlFor="tunnel-destination-host">目标地址（VPS 视角）</label><input id="tunnel-destination-host" className="input" required value={form.destinationHost} onChange={(event) => setForm({ ...form, destinationHost: event.target.value })} /></div>
-          <div className="field"><label htmlFor="tunnel-destination-port">目标端口</label><input id="tunnel-destination-port" className="input" type="number" min={1} max={65535} required value={form.destinationPort} onChange={(event) => setForm({ ...form, destinationPort: Number(event.target.value) })} /></div>
-          <div className="span-2 tunnel-form-actions"><p>建议使用 127.0.0.1，仅允许本机访问。监听其他 IP 可能向局域网开放服务。</p><button className="btn btn-primary" type="submit" disabled={busy !== "" || !form.name.trim() || !form.serverId || !form.listenPort || !form.destinationPort}><Plus size={16} />保存规则</button></div>
+          {form.kind === "local" && <><div className="field"><label htmlFor="tunnel-destination-host">目标地址（VPS 视角）</label><input id="tunnel-destination-host" className="input" required value={form.destinationHost} onChange={(event) => setForm({ ...form, destinationHost: event.target.value })} /></div>
+          <div className="field"><label htmlFor="tunnel-destination-port">目标端口</label><input id="tunnel-destination-port" className="input" type="number" min={1} max={65535} required value={form.destinationPort} onChange={(event) => setForm({ ...form, destinationPort: Number(event.target.value) })} /></div></>}
+          <div className="span-2 tunnel-form-actions"><p>{form.kind === "dynamic" ? "启动后，在客户端 SOCKS5 代理中填写上述监听地址和端口。当前支持 CONNECT，不支持 UDP。" : "目标地址从 VPS 视角解析。"} 建议使用 127.0.0.1，仅允许本机访问。</p><button className="btn btn-primary" type="submit" disabled={busy !== "" || !form.name.trim() || !form.serverId || !form.listenPort || (form.kind === "local" && !form.destinationPort)}><Plus size={16} />保存规则</button></div>
         </div>
       </form>}
     </section>
@@ -124,7 +126,7 @@ export function TunnelsPage({ servers, trusted, onAdd }: Props) {
       {loading ? <div className="skeleton" /> : rules.length === 0 ? <div className="empty"><div><Network size={30} /><h2>还没有转发规则</h2><p>保存一条规则后，可随时启动或停止，无需重复填写端口。</p></div></div> : <div className="table-wrap panel"><table className="data-table"><thead><tr><th>规则</th><th>本地监听</th><th>目标</th><th>连接</th><th>状态</th><th className="text-right">操作</th></tr></thead><tbody>{rules.map((rule) => {
         const status = statusMap.get(rule.id);
         const server = servers.find((item) => item.id === rule.serverId);
-        return <tr key={rule.id}><td><span className="table-name">{rule.name}</span><span className="table-meta">{server?.name ?? "未知 VPS"}</span></td><td className="measured">{status?.localEndpoint ?? `${rule.listenAddress}:${rule.listenPort}`}</td><td className="measured">{rule.destinationHost}:{rule.destinationPort}</td><td>{status ? <span className="table-meta">活动 {status.activeConnections} · 累计 {status.totalConnections}</span> : "—"}</td><td>{status ? <><span className="badge badge-ok">运行中</span><span className="table-meta">{formatTime(status.startedAt)} 启动</span></> : <span className="badge">已停止</span>}</td><td><div className="row-actions">{status ? <button className="icon-btn" type="button" title="停止隧道" aria-label={`停止 ${rule.name}`} disabled={busy !== ""} onClick={() => void stop(rule)}><Square size={15} /></button> : <button className="icon-btn" type="button" title="启动隧道" aria-label={`启动 ${rule.name}`} disabled={busy !== ""} onClick={() => void start(rule)}><Play size={16} /></button>}<button className="icon-btn" type="button" title="删除规则" aria-label={`删除 ${rule.name}`} disabled={busy !== ""} onClick={() => void remove(rule, Boolean(status))}><Trash2 size={16} /></button></div></td></tr>;
+        return <tr key={rule.id}><td><span className="table-name">{rule.name}</span><span className="table-meta">{rule.kind === "dynamic" ? "动态 SOCKS5" : "本地转发"} · {server?.name ?? "未知 VPS"}</span></td><td className="measured">{status?.localEndpoint ?? `${rule.listenAddress}:${rule.listenPort}`}</td><td className="measured">{rule.kind === "dynamic" ? "由客户端请求决定" : `${rule.destinationHost}:${rule.destinationPort}`}</td><td>{status ? <span className="table-meta">活动 {status.activeConnections} · 累计 {status.totalConnections}</span> : "—"}</td><td>{status ? <><span className="badge badge-ok">运行中</span><span className="table-meta">{formatTime(status.startedAt)} 启动</span></> : <span className="badge">已停止</span>}</td><td><div className="row-actions">{status ? <button className="icon-btn" type="button" title="停止隧道" aria-label={`停止 ${rule.name}`} disabled={busy !== ""} onClick={() => void stop(rule)}><Square size={15} /></button> : <button className="icon-btn" type="button" title="启动隧道" aria-label={`启动 ${rule.name}`} disabled={busy !== ""} onClick={() => void start(rule)}><Play size={16} /></button>}<button className="icon-btn" type="button" title="删除规则" aria-label={`删除 ${rule.name}`} disabled={busy !== ""} onClick={() => void remove(rule, Boolean(status))}><Trash2 size={16} /></button></div></td></tr>;
       })}</tbody></table></div>}
     </section>
   </>;

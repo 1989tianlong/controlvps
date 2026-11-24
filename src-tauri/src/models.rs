@@ -199,11 +199,19 @@ pub struct BatchResult {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortForwardKind {
+    Local,
+    Dynamic,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortForwardInput {
     pub name: String,
     pub server_id: String,
+    pub kind: PortForwardKind,
     pub listen_address: String,
     pub listen_port: u16,
     pub destination_host: String,
@@ -216,6 +224,7 @@ pub struct PortForwardRule {
     pub id: String,
     pub name: String,
     pub server_id: String,
+    pub kind: PortForwardKind,
     pub listen_address: String,
     pub listen_port: u16,
     pub destination_host: String,

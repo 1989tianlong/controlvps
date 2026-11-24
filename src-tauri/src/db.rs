@@ -63,6 +63,7 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 server_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'local',
                 listen_address TEXT NOT NULL,
                 listen_port INTEGER NOT NULL,
                 destination_host TEXT NOT NULL,
@@ -72,6 +73,17 @@ impl Database {
                 FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
              );",
         )?;
+        let has_forward_kind = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('port_forwards') WHERE name = 'kind')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_forward_kind {
+            connection.execute(
+                "ALTER TABLE port_forwards ADD COLUMN kind TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -312,7 +324,7 @@ impl Database {
     pub fn list_port_forwards(&self) -> AppResult<Vec<PortForwardRule>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT id, name, server_id, listen_address, listen_port, destination_host,
+            "SELECT id, name, server_id, kind, listen_address, listen_port, destination_host,
                     destination_port, created_at, updated_at
              FROM port_forwards ORDER BY name COLLATE NOCASE, created_at",
         )?;
@@ -323,7 +335,7 @@ impl Database {
     pub fn get_port_forward(&self, id: &str) -> AppResult<PortForwardRule> {
         self.connection()?
             .query_row(
-                "SELECT id, name, server_id, listen_address, listen_port, destination_host,
+                "SELECT id, name, server_id, kind, listen_address, listen_port, destination_host,
                         destination_port, created_at, updated_at
                  FROM port_forwards WHERE id = ?1",
                 [id],
@@ -344,6 +356,7 @@ impl Database {
             id: Uuid::new_v4().to_string(),
             name: input.name.trim().to_string(),
             server_id: input.server_id.clone(),
+            kind: input.kind,
             listen_address: input.listen_address.trim().to_string(),
             listen_port: input.listen_port,
             destination_host: input.destination_host.trim().to_string(),
@@ -353,13 +366,14 @@ impl Database {
         };
         self.connection()?.execute(
             "INSERT INTO port_forwards (
-                id, name, server_id, listen_address, listen_port, destination_host,
+                id, name, server_id, kind, listen_address, listen_port, destination_host,
                 destination_port, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 rule.id,
                 rule.name,
                 rule.server_id,
+                forward_kind(rule.kind),
                 rule.listen_address,
                 rule.listen_port,
                 rule.destination_host,
@@ -379,12 +393,19 @@ impl Database {
 }
 
 fn validate_port_forward(input: &PortForwardInput) -> AppResult<()> {
-    if input.name.trim().is_empty() || input.destination_host.trim().is_empty() {
-        return Err(AppError::Message("规则名称和目标地址不能为空".into()));
+    if input.name.trim().is_empty() {
+        return Err(AppError::Message("规则名称不能为空".into()));
     }
-    if input.listen_port == 0 || input.destination_port == 0 {
+    if input.kind == crate::models::PortForwardKind::Local
+        && input.destination_host.trim().is_empty()
+    {
+        return Err(AppError::Message("本地转发的目标地址不能为空".into()));
+    }
+    if input.listen_port == 0
+        || (input.kind == crate::models::PortForwardKind::Local && input.destination_port == 0)
+    {
         return Err(AppError::Message(
-            "监听端口和目标端口必须在 1 到 65535 之间".into(),
+            "监听端口必须在 1 到 65535 之间，本地转发还需要有效的目标端口".into(),
         ));
     }
     input
@@ -424,6 +445,13 @@ fn clean(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn forward_kind(kind: crate::models::PortForwardKind) -> &'static str {
+    match kind {
+        crate::models::PortForwardKind::Local => "local",
+        crate::models::PortForwardKind::Dynamic => "dynamic",
+    }
+}
+
 fn auth_name(method: &crate::models::AuthMethod) -> &'static str {
     match method {
         crate::models::AuthMethod::Password => "password",
@@ -460,16 +488,19 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
 }
 
 fn row_to_port_forward(row: &Row<'_>) -> rusqlite::Result<PortForwardRule> {
+    let kind: String = row.get(3)?;
     Ok(PortForwardRule {
         id: row.get(0)?,
         name: row.get(1)?,
         server_id: row.get(2)?,
-        listen_address: row.get(3)?,
-        listen_port: row.get(4)?,
-        destination_host: row.get(5)?,
-        destination_port: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        kind: serde_json::from_str(&format!("\"{kind}\""))
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        listen_address: row.get(4)?,
+        listen_port: row.get(5)?,
+        destination_host: row.get(6)?,
+        destination_port: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 
