@@ -12,11 +12,13 @@ use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, AlertEvent, AuthMethod, BatchResult, ConnectionReport, ConnectionTest,
-    DockerAction, DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer,
-    FileTransferKind, FileTransferTask, MetricSample, MonitoringSettings, OperationLog,
-    PortForwardInput, PortForwardRule, QuickAction, Server, ServerInput, ServerMetrics, Snippet,
-    SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
+    ActionResult, AlertEvent, AuthMethod, BackupPreview, BackupRestoreResult, BackupSummary,
+    BatchResult, ComposeAction, ComposeActionResult, ComposeLogs, ComposeOverview,
+    ConnectionReport, ConnectionTest, DockerAction, DockerActionResult, DockerLogs, DockerOverview,
+    FileListing, FileTransfer, FileTransferKind, FileTransferTask, MetricSample,
+    MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook,
+    RunbookInput, RunbookResult, Server, ServerInput, ServerMetrics, Snippet, SnippetInput,
+    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
     TerminalSession, TunnelStatus,
 };
 use crate::ssh;
@@ -48,6 +50,47 @@ pub fn get_app_info(paths: State<'_, AppPaths>) -> AppInfo {
         known_hosts_path: paths.known_hosts.display().to_string(),
         credential_store: "macOS Keychain".into(),
     }
+}
+
+#[tauri::command]
+pub async fn create_encrypted_backup(
+    db: State<'_, Database>,
+    path: String,
+    password: String,
+    include_credentials: bool,
+) -> CommandResult<BackupSummary> {
+    let database = db.inner().clone();
+    run_blocking(move || {
+        crate::backup::create(
+            &database,
+            std::path::Path::new(&path),
+            &password,
+            include_credentials,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn preview_encrypted_backup(
+    db: State<'_, Database>,
+    path: String,
+    password: String,
+) -> CommandResult<BackupPreview> {
+    let database = db.inner().clone();
+    run_blocking(move || crate::backup::preview(&database, std::path::Path::new(&path), &password))
+        .await
+}
+
+#[tauri::command]
+pub async fn restore_encrypted_backup(
+    db: State<'_, Database>,
+    path: String,
+    password: String,
+) -> CommandResult<BackupRestoreResult> {
+    let database = db.inner().clone();
+    run_blocking(move || crate::backup::restore(&database, std::path::Path::new(&path), &password))
+        .await
 }
 
 #[tauri::command]
@@ -242,7 +285,8 @@ pub async fn collect_metrics(
     .await;
     match &result {
         Ok(metrics) => {
-            db.insert_metric_sample(metrics).map_err(CommandError::from)?;
+            db.insert_metric_sample(metrics)
+                .map_err(CommandError::from)?;
             let _ = alerts::record_success(&app, &db, &alerts, &server, metrics);
         }
         Err(error) => {
@@ -258,7 +302,8 @@ pub fn list_metric_history(
     server_id: String,
     hours: u32,
 ) -> CommandResult<Vec<MetricSample>> {
-    db.list_metric_history(&server_id, hours).map_err(Into::into)
+    db.list_metric_history(&server_id, hours)
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -279,7 +324,8 @@ pub fn list_alert_events(
     db: State<'_, Database>,
     server_id: Option<String>,
 ) -> CommandResult<Vec<AlertEvent>> {
-    db.list_alert_events(server_id.as_deref()).map_err(Into::into)
+    db.list_alert_events(server_id.as_deref())
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -356,6 +402,82 @@ pub async fn get_docker_logs(
             allow_unknown_host,
         )?;
         docker::logs(&connection.session, &container_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_compose_projects(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeOverview> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        docker::compose_list(&connection.session)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_compose_action(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    project: String,
+    action: ComposeAction,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeActionResult> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        docker::compose_action(&connection.session, &project, action)
+    })
+    .await;
+    log_operation_result(&db, &id, "Docker Compose 项目操作", &result, |output| {
+        format!(
+            "{:?} {}，退出码 {}",
+            output.action, output.project, output.exit_code
+        )
+    });
+    result
+}
+
+#[tauri::command]
+pub async fn get_compose_logs(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    project: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeLogs> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        docker::compose_logs(&connection.session, &project)
     })
     .await
 }
@@ -586,6 +708,88 @@ pub fn update_snippet(
 #[tauri::command]
 pub fn delete_snippet(db: State<'_, Database>, id: String) -> CommandResult<()> {
     db.delete_snippet(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_runbooks(db: State<'_, Database>) -> CommandResult<Vec<Runbook>> {
+    db.list_runbooks().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_runbook(db: State<'_, Database>, input: RunbookInput) -> CommandResult<Runbook> {
+    db.create_runbook(&input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_runbook(
+    db: State<'_, Database>,
+    id: String,
+    input: RunbookInput,
+) -> CommandResult<Runbook> {
+    db.update_runbook(&id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_runbook(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    db.delete_runbook(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn run_runbook(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    ids: Vec<String>,
+    concurrency: usize,
+) -> CommandResult<RunbookResult> {
+    if ids.is_empty() || ids.len() > 50 {
+        return Err(CommandError::from(AppError::Message(
+            "每次 Runbook 执行需要选择 1 到 50 台服务器".into(),
+        )));
+    }
+    if !(1..=10).contains(&concurrency) {
+        return Err(CommandError::from(AppError::Message(
+            "并发数必须在 1 到 10 之间".into(),
+        )));
+    }
+    let runbook = db.get_runbook(&id).map_err(CommandError::from)?;
+    let mut unique_ids = Vec::new();
+    for server_id in ids {
+        if !unique_ids.contains(&server_id) {
+            unique_ids.push(server_id);
+        }
+    }
+    let mut jobs = Vec::with_capacity(unique_ids.len());
+    for server_id in unique_ids {
+        jobs.push(connection_job(&db, &server_id)?);
+    }
+    let known_hosts = paths.known_hosts.clone();
+    let result =
+        run_blocking(move || crate::runbook::execute(jobs, runbook, known_hosts, concurrency))
+            .await?;
+    for server in &result.results {
+        if let Some(error) = &server.error {
+            let _ = db.log_operation(
+                &server.server_id,
+                &format!("Runbook · {}", result.runbook_name),
+                false,
+                error,
+            );
+        }
+        for step in &server.steps {
+            let summary = match step.exit_code {
+                Some(code) => format!("退出码 {code}，耗时 {} ms", step.duration_ms),
+                None => step.error.clone().unwrap_or_else(|| "执行失败".into()),
+            };
+            let _ = db.log_operation(
+                &server.server_id,
+                &format!("Runbook · {} · {}", result.runbook_name, step.step_name),
+                step.success,
+                &summary,
+            );
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]

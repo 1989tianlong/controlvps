@@ -7,7 +7,8 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AlertEvent, AlertKind, AlertStatus, MetricSample, MonitoringSettings, OperationLog,
-    PortForwardInput, PortForwardRule, Server, ServerInput, ServerMetrics, Snippet, SnippetInput,
+    PortForwardInput, PortForwardRule, Runbook, RunbookInput, RunbookStep, Server, ServerInput,
+    ServerMetrics, Snippet, SnippetInput, WorkspaceBackup,
 };
 
 #[derive(Clone)]
@@ -59,6 +60,14 @@ impl Database {
                 name TEXT NOT NULL,
                 description TEXT,
                 command TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS runbooks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                steps TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
              );
@@ -384,6 +393,91 @@ impl Database {
         Ok(())
     }
 
+    pub fn list_runbooks(&self) -> AppResult<Vec<Runbook>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, description, steps, created_at, updated_at
+             FROM runbooks ORDER BY name COLLATE NOCASE, created_at",
+        )?;
+        let rows = statement.query_map([], row_to_runbook)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_runbook(&self, id: &str) -> AppResult<Runbook> {
+        self.connection()?
+            .query_row(
+                "SELECT id, name, description, steps, created_at, updated_at
+                 FROM runbooks WHERE id = ?1",
+                [id],
+                row_to_runbook,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这个 Runbook".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_runbook(&self, input: &RunbookInput) -> AppResult<Runbook> {
+        validate_runbook(input)?;
+        let now = Utc::now().to_rfc3339();
+        let runbook = Runbook {
+            id: Uuid::new_v4().to_string(),
+            name: input.name.trim().to_string(),
+            description: clean(input.description.as_deref()),
+            steps: normalized_steps(input),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.connection()?.execute(
+            "INSERT INTO runbooks (id, name, description, steps, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                runbook.id,
+                runbook.name,
+                runbook.description,
+                serde_json::to_string(&runbook.steps)
+                    .map_err(|error| AppError::Message(error.to_string()))?,
+                runbook.created_at,
+                runbook.updated_at,
+            ],
+        )?;
+        Ok(runbook)
+    }
+
+    pub fn update_runbook(&self, id: &str, input: &RunbookInput) -> AppResult<Runbook> {
+        validate_runbook(input)?;
+        let existing = self.get_runbook(id)?;
+        let runbook = Runbook {
+            id: existing.id,
+            name: input.name.trim().to_string(),
+            description: clean(input.description.as_deref()),
+            steps: normalized_steps(input),
+            created_at: existing.created_at,
+            updated_at: Utc::now().to_rfc3339(),
+        };
+        self.connection()?.execute(
+            "UPDATE runbooks SET name = ?2, description = ?3, steps = ?4, updated_at = ?5
+             WHERE id = ?1",
+            params![
+                runbook.id,
+                runbook.name,
+                runbook.description,
+                serde_json::to_string(&runbook.steps)
+                    .map_err(|error| AppError::Message(error.to_string()))?,
+                runbook.updated_at,
+            ],
+        )?;
+        Ok(runbook)
+    }
+
+    pub fn delete_runbook(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM runbooks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn list_port_forwards(&self) -> AppResult<Vec<PortForwardRule>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
@@ -454,6 +548,20 @@ impl Database {
         Ok(())
     }
 
+    pub fn workspace_backup(&self) -> AppResult<WorkspaceBackup> {
+        Ok(WorkspaceBackup {
+            format_version: 1,
+            created_at: Utc::now().to_rfc3339(),
+            servers: self.list_servers()?,
+            snippets: self.list_snippets()?,
+            runbooks: self.list_runbooks()?,
+            port_forwards: self.list_port_forwards()?,
+            monitoring: self.monitoring_settings()?,
+            includes_credentials: false,
+            credentials: std::collections::HashMap::new(),
+        })
+    }
+
     pub fn insert_metric_sample(&self, metrics: &ServerMetrics) -> AppResult<()> {
         let memory_usage = usage_percent(metrics.memory_used, metrics.memory_total);
         let disk_usage = usage_percent(metrics.disk_used, metrics.disk_total);
@@ -491,7 +599,9 @@ impl Database {
 
     pub fn list_metric_history(&self, server_id: &str, hours: u32) -> AppResult<Vec<MetricSample>> {
         if !(1..=168).contains(&hours) {
-            return Err(AppError::Message("历史趋势范围必须在 1 小时到 7 天之间".into()));
+            return Err(AppError::Message(
+                "历史趋势范围必须在 1 小时到 7 天之间".into(),
+            ));
         }
         self.get_server(server_id)?;
         let cutoff = (Utc::now() - Duration::hours(i64::from(hours))).to_rfc3339();
@@ -534,9 +644,13 @@ impl Database {
         }
     }
 
-    pub fn update_monitoring_settings(&self, settings: &MonitoringSettings) -> AppResult<MonitoringSettings> {
+    pub fn update_monitoring_settings(
+        &self,
+        settings: &MonitoringSettings,
+    ) -> AppResult<MonitoringSettings> {
         validate_monitoring_settings(settings)?;
-        let value = serde_json::to_string(settings).map_err(|error| AppError::Message(error.to_string()))?;
+        let value = serde_json::to_string(settings)
+            .map_err(|error| AppError::Message(error.to_string()))?;
         self.connection()?.execute(
             "INSERT INTO app_settings (key, value) VALUES ('monitoring', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -643,7 +757,9 @@ fn downsample(samples: Vec<MetricSample>, limit: usize) -> Vec<MetricSample> {
 
 fn validate_monitoring_settings(settings: &MonitoringSettings) -> AppResult<()> {
     if !(15..=3600).contains(&settings.interval_seconds) {
-        return Err(AppError::Message("采集间隔必须在 15 秒到 1 小时之间".into()));
+        return Err(AppError::Message(
+            "采集间隔必须在 15 秒到 1 小时之间".into(),
+        ));
     }
     if [
         settings.cpu_threshold,
@@ -659,7 +775,9 @@ fn validate_monitoring_settings(settings: &MonitoringSettings) -> AppResult<()> 
         return Err(AppError::Message("离线判定次数必须在 1 到 20 之间".into()));
     }
     if !(1..=1440).contains(&settings.cooldown_minutes) {
-        return Err(AppError::Message("告警冷却时间必须在 1 分钟到 24 小时之间".into()));
+        return Err(AppError::Message(
+            "告警冷却时间必须在 1 分钟到 24 小时之间".into(),
+        ));
     }
     Ok(())
 }
@@ -698,6 +816,40 @@ fn validate_port_forward(input: &PortForwardInput) -> AppResult<()> {
         .listen_address
         .parse::<std::net::IpAddr>()
         .map_err(|_| AppError::Message("监听地址必须是有效的 IP 地址，例如 127.0.0.1".into()))?;
+    Ok(())
+}
+
+fn normalized_steps(input: &RunbookInput) -> Vec<RunbookStep> {
+    input
+        .steps
+        .iter()
+        .map(|step| RunbookStep {
+            id: Uuid::new_v4().to_string(),
+            name: step.name.trim().to_string(),
+            command: step.command.clone(),
+        })
+        .collect()
+}
+
+fn validate_runbook(input: &RunbookInput) -> AppResult<()> {
+    if input.name.trim().is_empty() || input.name.chars().count() > 120 {
+        return Err(AppError::Message(
+            "Runbook 名称不能为空且不能超过 120 个字符".into(),
+        ));
+    }
+    if input.steps.is_empty() || input.steps.len() > 30 {
+        return Err(AppError::Message("每个 Runbook 需要 1 到 30 个步骤".into()));
+    }
+    if input.steps.iter().any(|step| {
+        step.name.trim().is_empty()
+            || step.name.chars().count() > 120
+            || step.command.trim().is_empty()
+            || step.command.len() > 100_000
+    }) {
+        return Err(AppError::Message(
+            "每个步骤都需要名称和命令，名称不超过 120 个字符，命令不超过 100000 字节".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -811,6 +963,18 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
         updated_at: row.get(17)?,
         has_password: row.get(18)?,
         has_key_passphrase: row.get(19)?,
+    })
+}
+
+fn row_to_runbook(row: &Row<'_>) -> rusqlite::Result<Runbook> {
+    let steps: String = row.get(3)?;
+    Ok(Runbook {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        steps: serde_json::from_str(&steps).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
     })
 }
 

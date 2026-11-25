@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -30,7 +31,7 @@ pub struct ServerInput {
     pub jump_server_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Server {
     pub id: String,
@@ -301,7 +302,7 @@ pub struct SnippetInput {
     pub command: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snippet {
     pub id: String,
@@ -322,6 +323,74 @@ pub struct BatchExecutionResult {
     pub exit_code: Option<i32>,
     pub success: bool,
     pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookStepInput {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookStep {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookInput {
+    pub name: String,
+    pub description: Option<String>,
+    pub steps: Vec<RunbookStepInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Runbook {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub steps: Vec<RunbookStep>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookStepResult {
+    pub step_id: String,
+    pub step_name: String,
+    pub command: String,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookServerResult {
+    pub server_id: String,
+    pub server_name: String,
+    pub steps: Vec<RunbookStepResult>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookResult {
+    pub runbook_name: String,
+    pub results: Vec<RunbookServerResult>,
+    pub success_count: usize,
+    pub failure_count: usize,
     pub duration_ms: u64,
 }
 
@@ -354,7 +423,7 @@ pub struct PortForwardInput {
     pub destination_port: u16,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortForwardRule {
     pub id: String,
@@ -448,6 +517,46 @@ pub struct DockerLogs {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ComposeProject {
+    pub name: String,
+    pub status: String,
+    pub config_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeOverview {
+    pub version: String,
+    pub projects: Vec<ComposeProject>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeAction {
+    Up,
+    Down,
+    Restart,
+    Pull,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeActionResult {
+    pub project: String,
+    pub action: ComposeAction,
+    pub output: String,
+    pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeLogs {
+    pub project: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemdService {
     pub name: String,
     pub load: String,
@@ -486,4 +595,64 @@ pub struct SystemdActionResult {
 pub struct SystemdLogs {
     pub unit: String,
     pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupCredentials {
+    pub password: Option<String>,
+    pub key_passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceBackup {
+    pub format_version: u32,
+    pub created_at: String,
+    pub servers: Vec<Server>,
+    pub snippets: Vec<Snippet>,
+    pub runbooks: Vec<Runbook>,
+    pub port_forwards: Vec<PortForwardRule>,
+    pub monitoring: MonitoringSettings,
+    pub includes_credentials: bool,
+    pub credentials: HashMap<String, BackupCredentials>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSummary {
+    pub path: String,
+    pub created_at: String,
+    pub size_bytes: u64,
+    pub server_count: usize,
+    pub snippet_count: usize,
+    pub runbook_count: usize,
+    pub port_forward_count: usize,
+    pub includes_credentials: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPreview {
+    pub created_at: String,
+    pub server_count: usize,
+    pub new_server_count: usize,
+    pub existing_server_count: usize,
+    pub snippet_count: usize,
+    pub runbook_count: usize,
+    pub port_forward_count: usize,
+    pub includes_credentials: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreResult {
+    pub imported_servers: usize,
+    pub skipped_servers: usize,
+    pub imported_snippets: usize,
+    pub skipped_snippets: usize,
+    pub imported_runbooks: usize,
+    pub skipped_runbooks: usize,
+    pub imported_port_forwards: usize,
+    pub skipped_port_forwards: usize,
 }

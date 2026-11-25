@@ -129,7 +129,7 @@ export default function App() {
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}
-        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} />}
+        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} onWorkspaceRestored={() => { void loadServers(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
       </div>
     </main>
     <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />

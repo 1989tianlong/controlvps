@@ -1,4 +1,5 @@
 mod alerts;
+mod backup;
 mod batch;
 mod commands;
 mod db;
@@ -7,6 +8,7 @@ mod error;
 mod files;
 mod metrics;
 mod models;
+mod runbook;
 mod ssh;
 mod ssh_config;
 mod systemd;
@@ -45,6 +47,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::create_encrypted_backup,
+            commands::preview_encrypted_backup,
+            commands::restore_encrypted_backup,
             commands::list_servers,
             commands::create_server,
             commands::import_ssh_config,
@@ -61,6 +66,9 @@ pub fn run() {
             commands::list_docker_containers,
             commands::run_docker_action,
             commands::get_docker_logs,
+            commands::list_compose_projects,
+            commands::run_compose_action,
+            commands::get_compose_logs,
             commands::list_systemd_services,
             commands::run_systemd_action,
             commands::get_systemd_logs,
@@ -70,6 +78,11 @@ pub fn run() {
             commands::create_snippet,
             commands::update_snippet,
             commands::delete_snippet,
+            commands::list_runbooks,
+            commands::create_runbook,
+            commands::update_runbook,
+            commands::delete_runbook,
+            commands::run_runbook,
             commands::run_batch_command,
             commands::list_port_forwards,
             commands::create_port_forward,

@@ -5,7 +5,8 @@ use ssh2::Session;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DockerAction, DockerActionResult, DockerContainer, DockerLogs, DockerOverview, DockerService,
+    ComposeAction, ComposeActionResult, ComposeLogs, ComposeOverview, ComposeProject, DockerAction,
+    DockerActionResult, DockerContainer, DockerLogs, DockerOverview, DockerService,
 };
 use crate::ssh::{self, ExecOutput};
 
@@ -87,6 +88,146 @@ pub fn logs(session: &Session, container_id: &str) -> AppResult<DockerLogs> {
         container_id: container_id.to_string(),
         output: combined_output(&output),
     })
+}
+
+pub fn compose_list(session: &Session) -> AppResult<ComposeOverview> {
+    let version = execute_compose_checked(session, "docker compose version --short")?;
+    Ok(ComposeOverview {
+        version: version.stdout.trim().to_string(),
+        projects: compose_projects(session)?,
+    })
+}
+
+pub fn compose_action(
+    session: &Session,
+    project_name: &str,
+    action: ComposeAction,
+) -> AppResult<ComposeActionResult> {
+    let project = find_compose_project(session, project_name)?;
+    let action_name = match action {
+        ComposeAction::Up => "up -d",
+        ComposeAction::Down => "down",
+        ComposeAction::Restart => "restart",
+        ComposeAction::Pull => "pull",
+    };
+    let command = format!("{} {action_name}", compose_command(&project));
+    let output = execute_compose_checked(session, &command)?;
+    Ok(ComposeActionResult {
+        project: project_name.to_string(),
+        action,
+        output: combined_output(&output),
+        exit_code: output.exit_code,
+    })
+}
+
+pub fn compose_logs(session: &Session, project_name: &str) -> AppResult<ComposeLogs> {
+    let project = find_compose_project(session, project_name)?;
+    let command = format!("{} logs --tail 200 --no-color", compose_command(&project));
+    let output = execute_compose_checked(session, &command)?;
+    Ok(ComposeLogs {
+        project: project_name.to_string(),
+        output: combined_output(&output),
+    })
+}
+
+fn compose_projects(session: &Session) -> AppResult<Vec<ComposeProject>> {
+    let listing = execute_compose_checked(session, "docker compose ls -a --format json")?;
+    let trimmed = listing.stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<Value>>(trimmed).map_err(|error| {
+            AppError::Message(format!("无法解析 Docker Compose 项目列表：{error}"))
+        })?
+    } else {
+        trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<Value>(line).map_err(|error| {
+                    AppError::Message(format!("无法解析 Docker Compose 项目列表：{error}"))
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?
+    };
+    let mut projects = values
+        .iter()
+        .map(|value| {
+            let name = value
+                .get("Name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::Message("Docker Compose 项目缺少名称".into()))?;
+            let config_files = value
+                .get("ConfigFiles")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if config_files.is_empty() {
+                return Err(AppError::Message(format!(
+                    "Compose 项目 {name} 没有配置文件路径"
+                )));
+            }
+            Ok(ComposeProject {
+                name: name.to_string(),
+                status: value
+                    .get("Status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                config_files,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    projects.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(projects)
+}
+
+fn find_compose_project(session: &Session, project_name: &str) -> AppResult<ComposeProject> {
+    if project_name.is_empty()
+        || project_name.len() > 128
+        || !project_name
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.'))
+    {
+        return Err(AppError::Message("Docker Compose 项目名称无效".into()));
+    }
+    compose_projects(session)?
+        .into_iter()
+        .find(|project| project.name == project_name)
+        .ok_or_else(|| AppError::Message("Compose 项目已不存在，请刷新列表".into()))
+}
+
+fn compose_command(project: &ComposeProject) -> String {
+    let files = project
+        .config_files
+        .iter()
+        .map(|path| format!("-f {}", shell_quote(path)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "docker compose {files} --project-name {}",
+        shell_quote(&project.name)
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn execute_compose_checked(session: &Session, command: &str) -> AppResult<ExecOutput> {
+    let output = ssh::execute(session, command)?;
+    if output.exit_code != 0 {
+        return Err(AppError::Message(format!(
+            "无法访问 Docker Compose v2，请确认 compose 插件已安装且当前用户有权限：{}",
+            combined_output(&output).trim()
+        )));
+    }
+    Ok(output)
 }
 
 fn execute_checked(session: &Session, command: &str) -> AppResult<ExecOutput> {

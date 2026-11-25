@@ -5,8 +5,15 @@ import type {
   AlertEvent,
   AppInfo,
   BatchResult,
+  BackupPreview,
+  BackupRestoreResult,
+  BackupSummary,
   ConnectionReport,
   ConnectionTest,
+  ComposeAction,
+  ComposeActionResult,
+  ComposeLogs,
+  ComposeOverview,
   DockerAction,
   DockerActionResult,
   DockerLogs,
@@ -20,6 +27,9 @@ import type {
   PortForwardInput,
   PortForwardRule,
   QuickAction,
+  Runbook,
+  RunbookInput,
+  RunbookResult,
   Server,
   ServerInput,
   ServerMetrics,
@@ -58,7 +68,7 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts"].includes(command)) return [] as T;
     if (command === "get_monitoring_settings") {
       return {
         autoCollect: false,
@@ -74,7 +84,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "0.9.0",
+        version: "1.0.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -97,6 +107,12 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 export const api = {
   appInfo: () => call<AppInfo>("get_app_info"),
+  createEncryptedBackup: (path: string, password: string, includeCredentials: boolean) =>
+    call<BackupSummary>("create_encrypted_backup", { path, password, includeCredentials }),
+  previewEncryptedBackup: (path: string, password: string) =>
+    call<BackupPreview>("preview_encrypted_backup", { path, password }),
+  restoreEncryptedBackup: (path: string, password: string) =>
+    call<BackupRestoreResult>("restore_encrypted_backup", { path, password }),
   listServers: () => call<Server[]>("list_servers"),
   createServer: (input: ServerInput) => call<Server>("create_server", { input }),
   importSshConfig: (path: string) => call<SshConfigImport>("import_ssh_config", { path }),
@@ -121,6 +137,12 @@ export const api = {
     call<DockerActionResult>("run_docker_action", { id, containerId, action, allowUnknownHost }),
   getDockerLogs: (id: string, containerId: string, allowUnknownHost = false) =>
     call<DockerLogs>("get_docker_logs", { id, containerId, allowUnknownHost }),
+  listComposeProjects: (id: string, allowUnknownHost = false) =>
+    call<ComposeOverview>("list_compose_projects", { id, allowUnknownHost }),
+  runComposeAction: (id: string, project: string, action: ComposeAction, allowUnknownHost = false) =>
+    call<ComposeActionResult>("run_compose_action", { id, project, action, allowUnknownHost }),
+  getComposeLogs: (id: string, project: string, allowUnknownHost = false) =>
+    call<ComposeLogs>("get_compose_logs", { id, project, allowUnknownHost }),
   listSystemdServices: (id: string, allowUnknownHost = false) =>
     call<SystemdOverview>("list_systemd_services", { id, allowUnknownHost }),
   runSystemdAction: (id: string, unit: string, action: SystemdAction, allowUnknownHost = false) =>
@@ -134,6 +156,12 @@ export const api = {
   createSnippet: (input: SnippetInput) => call<Snippet>("create_snippet", { input }),
   updateSnippet: (id: string, input: SnippetInput) => call<Snippet>("update_snippet", { id, input }),
   deleteSnippet: (id: string) => call<void>("delete_snippet", { id }),
+  listRunbooks: () => call<Runbook[]>("list_runbooks"),
+  createRunbook: (input: RunbookInput) => call<Runbook>("create_runbook", { input }),
+  updateRunbook: (id: string, input: RunbookInput) => call<Runbook>("update_runbook", { id, input }),
+  deleteRunbook: (id: string) => call<void>("delete_runbook", { id }),
+  runRunbook: (id: string, ids: string[], concurrency: number) =>
+    call<RunbookResult>("run_runbook", { id, ids, concurrency }),
   runBatchCommand: (ids: string[], command: string, concurrency: number) =>
     call<BatchResult>("run_batch_command", { ids, command, concurrency }),
   listPortForwards: () => call<PortForwardRule[]>("list_port_forwards"),

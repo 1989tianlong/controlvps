@@ -80,7 +80,12 @@ pub fn record_success(
     let memory = usage(metrics.memory_used, metrics.memory_total);
     let disk = usage(metrics.disk_used, metrics.disk_total);
     for (kind, value, threshold, label) in [
-        (AlertKind::Cpu, metrics.cpu_usage, settings.cpu_threshold, "CPU"),
+        (
+            AlertKind::Cpu,
+            metrics.cpu_usage,
+            settings.cpu_threshold,
+            "CPU",
+        ),
         (AlertKind::Memory, memory, settings.memory_threshold, "内存"),
         (AlertKind::Disk, disk, settings.disk_threshold, "系统盘"),
     ] {
@@ -161,9 +166,9 @@ fn change(
         let mut data = registry.data()?;
         let state = data.states.entry((server.id.clone(), kind)).or_default();
         if triggered {
-            let cooled_down = state
-                .last_triggered
-                .is_none_or(|time| time.elapsed() >= Duration::from_secs(u64::from(cooldown_minutes) * 60));
+            let cooled_down = state.last_triggered.is_none_or(|time| {
+                time.elapsed() >= Duration::from_secs(u64::from(cooldown_minutes) * 60)
+            });
             if state.active && !cooled_down {
                 Action::None
             } else {

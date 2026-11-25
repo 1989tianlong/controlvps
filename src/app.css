@@ -227,6 +227,11 @@
   .docker-service .btn { flex-shrink: 0; }
   .docker-logs { border-top: var(--rule-hair) solid var(--color-rule); }
   .docker-log-output { margin: var(--space-lg); max-height: 26rem; }
+  .docker-section-tabs { padding-inline: var(--space-lg); }
+  .docker-section-tabs .tab { display: inline-flex; align-items: center; gap: var(--space-xs); }
+  .compose-table { min-width: 54rem; }
+  .compose-path { display: block; max-width: 28rem; color: var(--color-cool); font-family: var(--font-outlier); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .compose-note { margin: 0; padding: var(--space-md) var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule); color: var(--color-muted); font-size: var(--text-sm); }
   .diagnostic-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-lg); }
   .diagnostic-heading p { margin-top: var(--space-xs); color: var(--color-muted); font-size: var(--text-sm); }
   .diagnostic-empty { display: grid; place-items: center; min-height: 12rem; color: var(--color-muted); text-align: center; }
@@ -315,7 +320,46 @@
   .setting-row p { margin-top: var(--space-xs); color: var(--color-muted); font-size: var(--text-sm); }
   .setting-value { overflow-wrap: break-word; color: var(--color-ink-2); }
   .log-time { color: var(--color-muted); white-space: nowrap; }
+  .workspace-switch { display: flex; gap: var(--space-lg); margin-bottom: var(--space-lg); border-bottom: var(--rule-hair) solid var(--color-rule); }
+  .workspace-switch .tab { display: inline-flex; align-items: center; gap: var(--space-xs); }
+  .automation-subheading { margin-bottom: var(--space-lg); }
+  .runbook-steps { display: grid; gap: var(--space-md); margin-top: var(--space-lg); }
+  .runbook-step { padding: var(--space-md); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); background: var(--color-paper-3); }
+  .runbook-step-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm); }
+  .runbook-step-number { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: var(--radius-pill); background: var(--color-cool-soft); color: var(--color-cool); font-family: var(--font-outlier); font-size: var(--text-sm); }
+  .runbook-step .command-editor { min-height: 7rem; margin-top: var(--space-sm); background: var(--color-paper-2); }
+  .runbook-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-top: var(--space-md); color: var(--color-muted); font-size: var(--text-sm); }
+  .runbook-review-steps { display: grid; gap: var(--space-sm); max-height: 24rem; margin-block: var(--space-md); overflow-y: auto; }
+  .runbook-review-steps h3 { font-size: var(--text-sm); }
+  .runbook-review-steps .review-command { max-height: 10rem; margin-block: var(--space-xs); }
+  .runbook-results > details { padding: var(--space-md) var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule); }
+  .runbook-results > details > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); cursor: pointer; }
+  .runbook-results .action-output { margin-bottom: var(--space-md); }
+  .runbook-step-error { margin-top: var(--space-md); color: var(--color-bad); }
+  .backup-settings { margin-top: var(--space-xl); }
+  .backup-settings .section-heading h2 { font-size: var(--text-lg); }
+  .backup-settings .section-heading > svg { color: var(--color-cool); }
+  .backup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); }
+  .backup-card { display: flex; flex-direction: column; align-items: stretch; padding: var(--space-lg); }
+  .backup-card-heading { display: flex; align-items: flex-start; gap: var(--space-sm); margin-bottom: var(--space-lg); }
+  .backup-card-heading > svg { flex-shrink: 0; margin-top: var(--space-2xs); color: var(--color-cool); }
+  .backup-card-heading h3 { font-size: var(--text-base); }
+  .backup-card-heading p { margin-top: var(--space-xs); color: var(--color-muted); font-size: var(--text-sm); }
+  .backup-card > .btn:last-child { align-self: flex-start; margin-top: var(--space-md); }
+  .backup-credential-option { display: flex; align-items: flex-start; gap: var(--space-sm); margin-top: var(--space-md); cursor: pointer; }
+  .backup-credential-option input { flex-shrink: 0; width: 1rem; height: 1rem; margin-top: var(--space-2xs); accent-color: var(--color-cool); }
+  .backup-credential-option strong, .backup-credential-option small { display: block; }
+  .backup-credential-option small { margin-top: var(--space-2xs); color: var(--color-muted); }
+  .backup-file-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-xs); }
+  .backup-file-picker .input { overflow: hidden; text-overflow: ellipsis; }
+  .backup-preview { display: grid; gap: var(--space-2xs); margin-top: var(--space-md); padding: var(--space-md); border-left: 2px solid var(--color-ok); background: var(--color-ok-soft); color: var(--color-ok); font-size: var(--text-sm); }
+  .backup-notice { margin: 0 0 var(--space-lg); }
   .menu-button { display: none; }
+  .fatal-error { display: grid; place-items: start; max-width: 46rem; margin: 12vh auto; padding: var(--space-xl); }
+  .fatal-error > svg { color: var(--color-bad); }
+  .fatal-error h1 { margin-top: var(--space-md); }
+  .fatal-error p { margin-block: var(--space-sm); color: var(--color-muted); }
+  .fatal-error pre { width: 100%; margin-block: var(--space-lg); padding: var(--space-md); overflow-wrap: anywhere; white-space: pre-wrap; background: var(--color-bad-soft); color: var(--color-bad); }
   .mobile-backdrop { display: none; }
 }
 
@@ -327,6 +371,7 @@
   .metric, .stat { border-bottom: var(--rule-hair) solid var(--color-rule); }
   .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .automation-layout { grid-template-columns: minmax(0, 1fr); }
+  .backup-grid { grid-template-columns: minmax(0, 1fr); }
   .snippet-list { max-height: 16rem; }
   .chart-grid { grid-template-columns: minmax(0, 1fr); }
   .trend-chart:nth-child(even) { border-left: 0; }

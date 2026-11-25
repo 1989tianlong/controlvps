@@ -3,13 +3,15 @@ import { ArrowUpRight, Bell, LockKeyhole, Save } from "lucide-react";
 import { api, errorMessage, openExternal } from "../lib/api";
 import { sendSystemNotification } from "../lib/notifications";
 import type { AppInfo, MonitoringSettings } from "../types";
+import { BackupSettings } from "./BackupSettings";
 
 interface Props {
   settings?: MonitoringSettings;
   onSettingsChange: (settings: MonitoringSettings) => void;
+  onWorkspaceRestored: () => void;
 }
 
-export function SettingsPage({ settings, onSettingsChange }: Props) {
+export function SettingsPage({ settings, onSettingsChange, onWorkspaceRestored }: Props) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [draft, setDraft] = useState<MonitoringSettings>();
   const [saving, setSaving] = useState(false);
@@ -71,5 +73,6 @@ export function SettingsPage({ settings, onSettingsChange }: Props) {
       <div className="setting-row"><div><h2>开源许可证</h2><p>ControlVPS 使用 GNU General Public License v3.0。</p></div><button className="btn justify-self-end" type="button" onClick={() => openExternal("https://github.com/1989tianlong/controlvps")}>查看仓库<ArrowUpRight size={15} /></button></div>
       <div className="setting-row"><div><h2>应用版本</h2><p>Rust、Tauri 2、React 与 Tailwind CSS。</p></div><span className="measured justify-self-end">v{info?.version ?? "0.1.0"}</span></div>
     </div>
+    <BackupSettings onRestored={onWorkspaceRestored} />
   </>;
 }

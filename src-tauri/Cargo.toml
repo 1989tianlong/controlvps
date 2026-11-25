@@ -1,6 +1,6 @@
 [package]
 name = "controlvps"
-version = "0.9.0"
+version = "1.0.0"
 description = "Local-first VPS management and discovery"
 authors = ["ControlVPS contributors"]
 license = "GPL-3.0-only"
@@ -16,9 +16,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
-keyring = "3"
+keyring = { version = "3", features = ["apple-native"] }
+rand_core = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

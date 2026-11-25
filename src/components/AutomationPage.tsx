@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronRight, Play, Plus, Save, Search, Server as ServerIcon, ShieldAlert, TerminalSquare, Trash2, X, XCircle } from "lucide-react";
+import { BookOpenCheck, CheckCircle2, ChevronRight, ListChecks, Play, Plus, Save, Search, Server as ServerIcon, ShieldAlert, TerminalSquare, Trash2, X, XCircle } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import type { BatchResult, Server, Snippet, SnippetInput, TrustedExecutor } from "../types";
+import { RunbookManager } from "./RunbookManager";
 
 const emptyDraft: SnippetInput = { name: "", description: "", command: "" };
 const variables = [
@@ -16,7 +17,16 @@ interface Props {
   onAdd: () => void;
 }
 
-export function AutomationPage({ servers, trusted, onAdd }: Props) {
+export function AutomationPage(props: Props) {
+  const [mode, setMode] = useState<"snippets" | "runbooks">("snippets");
+  return <>
+    <div className="page-heading"><div><h1>批量运维</h1><p>保存常用命令，或使用分步 Runbook 执行可审查的运维流程。</p></div>{mode === "runbooks" && <span className="badge badge-cool"><BookOpenCheck size={15} />失败即停止当前服务器后续步骤</span>}</div>
+    <div className="workspace-switch" role="tablist" aria-label="运维模式"><button className="tab" type="button" role="tab" aria-selected={mode === "snippets"} onClick={() => setMode("snippets")}><ListChecks size={16} />命令片段</button><button className="tab" type="button" role="tab" aria-selected={mode === "runbooks"} onClick={() => setMode("runbooks")}><BookOpenCheck size={16} />Runbook</button></div>
+    {mode === "snippets" ? <SnippetAutomation {...props} /> : <RunbookManager {...props} />}
+  </>;
+}
+
+function SnippetAutomation({ servers, trusted, onAdd }: Props) {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string>();
   const [draft, setDraft] = useState<SnippetInput>(emptyDraft);
@@ -138,7 +148,7 @@ export function AutomationPage({ servers, trusted, onAdd }: Props) {
   };
 
   return <>
-    <div className="page-heading"><div><h1>批量运维</h1><p>保存常用命令，在明确确认目标后并发执行。</p></div><button className="btn btn-primary" type="button" onClick={newSnippet} disabled={busy}><Plus size={16} />新建片段</button></div>
+    <div className="section-heading automation-subheading"><span className="table-meta">单条命令可安全转义服务器变量并并发执行</span><button className="btn btn-primary" type="button" onClick={newSnippet} disabled={busy}><Plus size={16} />新建片段</button></div>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {notice && <div className="file-notice automation-notice" role="status">{notice}</div>}
     <div className="automation-layout">

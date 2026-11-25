@@ -119,8 +119,7 @@ export type QuickAction =
   | "system_info"
   | "processes"
   | "disk_usage"
-  | "system_logs"
-  | "clean_cache"
+  | "system_logs"| "clean_cache"
   | "reboot";
 
 export interface ActionResult {
@@ -219,6 +218,56 @@ export interface BatchResult {
   durationMs: number;
 }
 
+export interface RunbookStepInput {
+  name: string;
+  command: string;
+}
+
+export interface RunbookStep extends RunbookStepInput {
+  id: string;
+}
+
+export interface RunbookInput {
+  name: string;
+  description?: string;
+  steps: RunbookStepInput[];
+}
+
+export interface Runbook extends Omit<RunbookInput, "steps"> {
+  id: string;
+  steps: RunbookStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunbookStepResult {
+  stepId: string;
+  stepName: string;
+  command: string;
+  output: string;
+  exitCode: number | null;
+  success: boolean;
+  error?: string;
+  durationMs: number;
+}
+
+export interface RunbookServerResult {
+  serverId: string;
+  serverName: string;
+  steps: RunbookStepResult[];
+  success: boolean;
+  error?: string;
+  durationMs: number;
+}
+
+export interface RunbookResult {
+  runbookName: string;
+  results: RunbookServerResult[];
+  successCount: number;
+  failureCount: number;
+  durationMs: number;
+}
+
 export type PortForwardKind = "local" | "remote" | "dynamic";
 
 export interface PortForwardInput {
@@ -261,10 +310,10 @@ export interface DockerContainer {
   ports: string;
   services: DockerService[];
   createdAt: string;
-  cpuPercent?: number;
-  memoryPercent?: number;
-  memoryUsage?: string;
-  pids?: number;
+  cpuPercent: number | null;
+  memoryPercent: number | null;
+  memoryUsage: string | null;
+  pids: number | null;
 }
 
 export interface DockerService {
@@ -291,6 +340,31 @@ export interface DockerActionResult {
 
 export interface DockerLogs {
   containerId: string;
+  output: string;
+}
+
+export interface ComposeProject {
+  name: string;
+  status: string;
+  configFiles: string[];
+}
+
+export interface ComposeOverview {
+  version: string;
+  projects: ComposeProject[];
+}
+
+export type ComposeAction = "up" | "down" | "restart" | "pull";
+
+export interface ComposeActionResult {
+  project: string;
+  action: ComposeAction;
+  output: string;
+  exitCode: number;
+}
+
+export interface ComposeLogs {
+  project: string;
   output: string;
 }
 
@@ -322,8 +396,40 @@ export interface SystemdLogs {
   output: string;
 }
 
-export interface AppInfo {
-  version: string;
+export interface BackupSummary {
+  path: string;
+  createdAt: string;
+  sizeBytes: number;
+  serverCount: number;
+  snippetCount: number;
+  runbookCount: number;
+  portForwardCount: number;
+  includesCredentials: boolean;
+}
+
+export interface BackupPreview {
+  createdAt: string;
+  serverCount: number;
+  newServerCount: number;
+  existingServerCount: number;
+  snippetCount: number;
+  runbookCount: number;
+  portForwardCount: number;
+  includesCredentials: boolean;
+}
+
+export interface BackupRestoreResult {
+  importedServers: number;
+  skippedServers: number;
+  importedSnippets: number;
+  skippedSnippets: number;
+  importedRunbooks: number;
+  skippedRunbooks: number;
+  importedPortForwards: number;
+  skippedPortForwards: number;
+}
+
+export interface AppInfo {  version: string;
   dataDir: string;
   knownHostsPath: string;
   credentialStore: string;
