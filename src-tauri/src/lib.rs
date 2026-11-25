@@ -9,6 +9,7 @@ mod files;
 mod metrics;
 mod models;
 mod runbook;
+mod service_monitor;
 mod ssh;
 mod ssh_config;
 mod systemd;
@@ -19,6 +20,7 @@ mod tunnel;
 use alerts::AlertRegistry;
 use commands::AppPaths;
 use db::Database;
+use service_monitor::ServiceMonitorRegistry;
 use tauri::Manager;
 use terminal::TerminalRegistry;
 use transfers::TransferRegistry;
@@ -32,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(TerminalRegistry::default())
         .manage(AlertRegistry::default())
+        .manage(ServiceMonitorRegistry::default())
         .manage(TransferRegistry::default())
         .manage(TunnelRegistry::default())
         .setup(|app| {
@@ -63,6 +66,17 @@ pub fn run() {
             commands::update_monitoring_settings,
             commands::list_alert_events,
             commands::list_active_alerts,
+            commands::list_service_monitors,
+            commands::create_service_monitor,
+            commands::update_service_monitor,
+            commands::set_service_monitor_enabled,
+            commands::delete_service_monitor,
+            commands::check_service_monitor,
+            commands::list_service_samples,
+            commands::list_service_events,
+            commands::get_service_notification_settings,
+            commands::update_service_notification_settings,
+            commands::test_service_webhook,
             commands::list_docker_containers,
             commands::run_docker_action,
             commands::get_docker_logs,

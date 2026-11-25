@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Activity, BellRing, RefreshCw, Settings, TriangleAlert } from "lucide-react";
+import { Activity, BellRing, Globe2, RefreshCw, Settings, TriangleAlert } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime, percent } from "../lib/format";
 import type { AlertEvent, MetricSample, MonitoringSettings, Server, ServerMetrics, TrustedExecutor } from "../types";
+import type { ServiceMonitoringController } from "../hooks/useServiceMonitoring";
+import { ServiceMonitorManager } from "./ServiceMonitorManager";
 
 interface Props {
   servers: Server[];
@@ -13,6 +15,7 @@ interface Props {
   trusted: TrustedExecutor;
   onMetrics: (serverId: string, metrics: ServerMetrics) => void;
   onSettings: () => void;
+  serviceMonitoring: ServiceMonitoringController;
 }
 
 type Series = {
@@ -21,7 +24,16 @@ type Series = {
   value: (sample: MetricSample) => number;
 };
 
-export function MonitoringPage({ servers, metrics, errors, settings, trusted, onMetrics, onSettings }: Props) {
+export function MonitoringPage(props: Props) {
+  const [mode, setMode] = useState<"resources" | "services">("resources");
+  return <>
+    <div className="page-heading"><div><h1>监控与告警</h1><p>同时跟踪 VPS 主机资源和网站、端口、DNS 的实际可用性。</p></div></div>
+    <div className="workspace-switch" role="tablist" aria-label="监控类型"><button className="tab" type="button" role="tab" aria-selected={mode === "resources"} onClick={() => setMode("resources")}><Activity size={16} />主机资源</button><button className="tab" type="button" role="tab" aria-selected={mode === "services"} onClick={() => setMode("services")}><Globe2 size={16} />服务可用性</button></div>
+    {mode === "resources" ? <ResourceMonitoring {...props} /> : <ServiceMonitorManager servers={props.servers} controller={props.serviceMonitoring} onSettings={props.onSettings} />}
+  </>;
+}
+
+function ResourceMonitoring({ servers, metrics, errors, settings, trusted, onMetrics, onSettings }: Props) {
   const [selectedId, setSelectedId] = useState(servers[0]?.id ?? "");
   const [hours, setHours] = useState(24);
   const [samples, setSamples] = useState<MetricSample[]>([]);
@@ -86,9 +98,7 @@ export function MonitoringPage({ servers, metrics, errors, settings, trusted, on
   const selectedAlerts = useMemo(() => activeAlerts.filter((event) => event.serverId === selectedId), [activeAlerts, selectedId]);
 
   return <>
-    <div className="page-heading">
-      <div><h1>监控与告警</h1><p>本地保存 7 天历史采样，跟踪资源趋势和连接异常。</p></div>
-      <div className="heading-actions">
+    <div className="section-heading automation-subheading"><span className="table-meta">通过 SSH 读取 Linux 指标，本地保存 7 天历史采样</span><div className="heading-actions">
         <select className="select" aria-label="监控服务器" value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>
           {servers.map((server) => <option value={server.id} key={server.id}>{server.name}</option>)}
         </select>

@@ -17,10 +17,13 @@ use crate::models::{
     ConnectionReport, ConnectionTest, DockerAction, DockerActionResult, DockerLogs, DockerOverview,
     FileListing, FileTransfer, FileTransferKind, FileTransferTask, MetricSample,
     MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook,
-    RunbookInput, RunbookResult, Server, ServerInput, ServerMetrics, Snippet, SnippetInput,
-    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
-    TerminalSession, TunnelStatus,
+    RunbookInput, RunbookResult, Server, ServerInput, ServerMetrics, ServiceCheckResult,
+    ServiceEvent, ServiceMonitorInput, ServiceMonitorView, ServiceNotificationInput,
+    ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput, SshConfigImport,
+    SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview, TerminalSession,
+    TunnelStatus,
 };
+use crate::service_monitor::{self, ServiceMonitorRegistry};
 use crate::ssh;
 use crate::ssh_config;
 use crate::systemd;
@@ -331,6 +334,93 @@ pub fn list_alert_events(
 #[tauri::command]
 pub fn list_active_alerts(db: State<'_, Database>) -> CommandResult<Vec<AlertEvent>> {
     db.list_active_alerts().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_service_monitors(db: State<'_, Database>) -> CommandResult<Vec<ServiceMonitorView>> {
+    db.list_service_monitors().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_service_monitor(
+    db: State<'_, Database>,
+    input: ServiceMonitorInput,
+) -> CommandResult<ServiceMonitorView> {
+    db.create_service_monitor(&input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_service_monitor(
+    db: State<'_, Database>,
+    id: String,
+    input: ServiceMonitorInput,
+) -> CommandResult<ServiceMonitorView> {
+    db.update_service_monitor(&id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn set_service_monitor_enabled(
+    db: State<'_, Database>,
+    id: String,
+    enabled: bool,
+) -> CommandResult<ServiceMonitorView> {
+    db.set_service_monitor_enabled(&id, enabled)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_service_monitor(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    db.delete_service_monitor(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn check_service_monitor(
+    app: AppHandle,
+    db: State<'_, Database>,
+    registry: State<'_, ServiceMonitorRegistry>,
+    id: String,
+) -> CommandResult<ServiceCheckResult> {
+    let database = db.inner().clone();
+    let registry = registry.inner().clone();
+    run_blocking(move || service_monitor::check(&app, &database, &registry, &id)).await
+}
+
+#[tauri::command]
+pub fn list_service_samples(
+    db: State<'_, Database>,
+    id: String,
+    hours: u32,
+) -> CommandResult<Vec<ServiceSample>> {
+    db.list_service_samples(&id, hours).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_service_events(
+    db: State<'_, Database>,
+    id: Option<String>,
+) -> CommandResult<Vec<ServiceEvent>> {
+    db.list_service_events(id.as_deref()).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_service_notification_settings(
+    db: State<'_, Database>,
+) -> CommandResult<ServiceNotificationSettings> {
+    service_monitor::notification_settings(&db).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_service_notification_settings(
+    db: State<'_, Database>,
+    input: ServiceNotificationInput,
+) -> CommandResult<ServiceNotificationSettings> {
+    service_monitor::save_notification_settings(&db, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn test_service_webhook(db: State<'_, Database>) -> CommandResult<()> {
+    let database = db.inner().clone();
+    run_blocking(move || service_monitor::test_webhook(&database)).await
 }
 
 #[tauri::command]

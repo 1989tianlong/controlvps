@@ -1,14 +1,16 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AlertEvent, AlertKind, AlertStatus, MetricSample, MonitoringSettings, OperationLog,
     PortForwardInput, PortForwardRule, Runbook, RunbookInput, RunbookStep, Server, ServerInput,
-    ServerMetrics, Snippet, SnippetInput, WorkspaceBackup,
+    ServerMetrics, ServiceEvent, ServiceEventKind, ServiceMonitor, ServiceMonitorInput,
+    ServiceMonitorKind, ServiceMonitorView, ServiceProbe, ServiceSample, Snippet, SnippetInput,
+    WorkspaceBackup,
 };
 
 #[derive(Clone)]
@@ -111,6 +113,49 @@ impl Database {
              );
              CREATE INDEX IF NOT EXISTS idx_alert_events_server
              ON alert_events(server_id, id DESC);
+             CREATE TABLE IF NOT EXISTS service_monitors (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL,
+                port INTEGER,
+                server_id TEXT,
+                interval_seconds INTEGER NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                expected_status INTEGER NOT NULL DEFAULT 200,
+                keyword TEXT,
+                failure_threshold INTEGER NOT NULL DEFAULT 3,
+                certificate_warning_days INTEGER NOT NULL DEFAULT 30,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE SET NULL
+             );
+             CREATE TABLE IF NOT EXISTS service_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                monitor_id TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                status_code INTEGER,
+                detail TEXT NOT NULL,
+                certificate_expires_at TEXT,
+                certificate_days_remaining INTEGER,
+                checked_at TEXT NOT NULL,
+                FOREIGN KEY(monitor_id) REFERENCES service_monitors(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_service_samples_monitor_time
+             ON service_samples(monitor_id, id DESC);
+             CREATE TABLE IF NOT EXISTS service_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                monitor_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(monitor_id) REFERENCES service_monitors(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_service_events_monitor
+             ON service_events(monitor_id, id DESC);
              CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -548,6 +593,335 @@ impl Database {
         Ok(())
     }
 
+    pub fn list_service_monitors(&self) -> AppResult<Vec<ServiceMonitorView>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, kind, target, port, server_id, interval_seconds, timeout_seconds,
+                    expected_status, keyword, failure_threshold, certificate_warning_days,
+                    enabled, created_at, updated_at
+             FROM service_monitors ORDER BY name COLLATE NOCASE, created_at",
+        )?;
+        let monitors = statement
+            .query_map([], row_to_service_monitor)?
+            .collect::<Result<Vec<_>, _>>()?;
+        monitors
+            .iter()
+            .map(|monitor| service_monitor_view(&connection, monitor).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn get_service_monitor(&self, id: &str) -> AppResult<ServiceMonitor> {
+        self.connection()?
+            .query_row(
+                "SELECT id, name, kind, target, port, server_id, interval_seconds, timeout_seconds,
+                        expected_status, keyword, failure_threshold, certificate_warning_days,
+                        enabled, created_at, updated_at
+                 FROM service_monitors WHERE id = ?1",
+                [id],
+                row_to_service_monitor,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这个服务监控".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_service_monitor(
+        &self,
+        input: &ServiceMonitorInput,
+    ) -> AppResult<ServiceMonitorView> {
+        crate::service_monitor::validate_input(input)?;
+        if let Some(server_id) = clean(input.server_id.as_deref()) {
+            self.get_server(&server_id)?;
+        }
+        let monitor = ServiceMonitor {
+            id: Uuid::new_v4().to_string(),
+            name: input.name.trim().to_string(),
+            kind: input.kind,
+            target: input.target.trim().to_string(),
+            port: input.port.filter(|port| *port != 0),
+            server_id: clean(input.server_id.as_deref()),
+            interval_seconds: input.interval_seconds,
+            timeout_seconds: input.timeout_seconds,
+            expected_status: input.expected_status,
+            keyword: clean(input.keyword.as_deref()),
+            failure_threshold: input.failure_threshold,
+            certificate_warning_days: input.certificate_warning_days,
+            enabled: input.enabled,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        };
+        self.connection()?.execute(
+            "INSERT INTO service_monitors (
+                id, name, kind, target, port, server_id, interval_seconds, timeout_seconds,
+                expected_status, keyword, failure_threshold, certificate_warning_days,
+                enabled, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                monitor.id,
+                monitor.name,
+                service_monitor_kind(monitor.kind),
+                monitor.target,
+                monitor.port,
+                monitor.server_id,
+                monitor.interval_seconds,
+                monitor.timeout_seconds,
+                monitor.expected_status,
+                monitor.keyword,
+                monitor.failure_threshold,
+                monitor.certificate_warning_days,
+                monitor.enabled,
+                monitor.created_at,
+                monitor.updated_at,
+            ],
+        )?;
+        self.service_monitor_view(&monitor.id)
+    }
+
+    pub fn update_service_monitor(
+        &self,
+        id: &str,
+        input: &ServiceMonitorInput,
+    ) -> AppResult<ServiceMonitorView> {
+        crate::service_monitor::validate_input(input)?;
+        let existing = self.get_service_monitor(id)?;
+        if let Some(server_id) = clean(input.server_id.as_deref()) {
+            self.get_server(&server_id)?;
+        }
+        let changed = self.connection()?.execute(
+            "UPDATE service_monitors SET name = ?2, kind = ?3, target = ?4, port = ?5,
+                    server_id = ?6, interval_seconds = ?7, timeout_seconds = ?8,
+                    expected_status = ?9, keyword = ?10, failure_threshold = ?11,
+                    certificate_warning_days = ?12, enabled = ?13, updated_at = ?14
+             WHERE id = ?1",
+            params![
+                id,
+                input.name.trim(),
+                service_monitor_kind(input.kind),
+                input.target.trim(),
+                input.port.filter(|port| *port != 0),
+                clean(input.server_id.as_deref()),
+                input.interval_seconds,
+                input.timeout_seconds,
+                input.expected_status,
+                clean(input.keyword.as_deref()),
+                input.failure_threshold,
+                input.certificate_warning_days,
+                input.enabled,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Message("未找到这个服务监控".into()));
+        }
+        if existing.kind != input.kind || existing.target != input.target.trim() {
+            let monitor = self.get_service_monitor(id)?;
+            let connection = self.connection()?;
+            for kind in [
+                ServiceEventKind::Availability,
+                ServiceEventKind::Certificate,
+            ] {
+                service_event_transition(
+                    &connection,
+                    &monitor,
+                    kind,
+                    false,
+                    true,
+                    "监控目标已变更，旧事件已关闭".into(),
+                )?;
+            }
+        }
+        self.service_monitor_view(id)
+    }
+
+    pub fn set_service_monitor_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> AppResult<ServiceMonitorView> {
+        let changed = self.connection()?.execute(
+            "UPDATE service_monitors SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, enabled, Utc::now().to_rfc3339()],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Message("未找到这个服务监控".into()));
+        }
+        self.service_monitor_view(id)
+    }
+
+    pub fn delete_service_monitor(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM service_monitors WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn service_monitor_view(&self, id: &str) -> AppResult<ServiceMonitorView> {
+        let monitor = self.get_service_monitor(id)?;
+        let connection = self.connection()?;
+        service_monitor_view(&connection, &monitor).map_err(Into::into)
+    }
+
+    pub fn list_service_samples(
+        &self,
+        monitor_id: &str,
+        hours: u32,
+    ) -> AppResult<Vec<ServiceSample>> {
+        if !(1..=720).contains(&hours) {
+            return Err(AppError::Message(
+                "服务历史范围必须在 1 小时到 30 天之间".into(),
+            ));
+        }
+        self.get_service_monitor(monitor_id)?;
+        let cutoff = (Utc::now() - Duration::hours(i64::from(hours))).to_rfc3339();
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, monitor_id, success, latency_ms, status_code, detail,
+                    certificate_expires_at, certificate_days_remaining, checked_at
+             FROM service_samples WHERE monitor_id = ?1 AND checked_at >= ?2
+             ORDER BY checked_at, id",
+        )?;
+        let samples = statement
+            .query_map(params![monitor_id, cutoff], row_to_service_sample)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(downsample_service_samples(samples, 720))
+    }
+
+    pub fn list_service_events(&self, monitor_id: Option<&str>) -> AppResult<Vec<ServiceEvent>> {
+        let connection = self.connection()?;
+        let sql = "SELECT e.id, e.monitor_id, m.name, e.kind, e.status, e.message, e.created_at
+                   FROM service_events e JOIN service_monitors m ON m.id = e.monitor_id";
+        let mut events = Vec::new();
+        if let Some(id) = monitor_id {
+            let mut statement = connection.prepare(&format!(
+                "{sql} WHERE e.monitor_id = ?1 ORDER BY e.id DESC LIMIT 100"
+            ))?;
+            let rows = statement.query_map([id], row_to_service_event)?;
+            for event in rows {
+                events.push(event?);
+            }
+        } else {
+            let mut statement =
+                connection.prepare(&format!("{sql} ORDER BY e.id DESC LIMIT 100"))?;
+            let rows = statement.query_map([], row_to_service_event)?;
+            for event in rows {
+                events.push(event?);
+            }
+        }
+        Ok(events)
+    }
+
+    pub fn record_service_probe(
+        &self,
+        monitor: &ServiceMonitor,
+        probe: &ServiceProbe,
+    ) -> AppResult<(ServiceMonitorView, Vec<ServiceEvent>)> {
+        let checked_at = Utc::now().to_rfc3339();
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO service_samples (
+                monitor_id, success, latency_ms, status_code, detail,
+                certificate_expires_at, certificate_days_remaining, checked_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                monitor.id,
+                probe.success,
+                probe.latency_ms,
+                probe.status_code,
+                probe.detail,
+                probe.certificate_expires_at,
+                probe.certificate_days_remaining,
+                checked_at,
+            ],
+        )?;
+        let cutoff = (Utc::now() - Duration::days(30)).to_rfc3339();
+        transaction.execute(
+            "DELETE FROM service_samples WHERE checked_at < ?1",
+            [cutoff],
+        )?;
+        transaction.execute(
+            "DELETE FROM service_samples WHERE monitor_id = ?1 AND id IN (
+                SELECT id FROM service_samples WHERE monitor_id = ?1
+                ORDER BY id DESC LIMIT -1 OFFSET 50000
+             )",
+            [&monitor.id],
+        )?;
+        let mut statement = transaction.prepare(
+            "SELECT success FROM service_samples WHERE monitor_id = ?1 ORDER BY id DESC LIMIT 20",
+        )?;
+        let recent = statement
+            .query_map([&monitor.id], |row| row.get::<_, bool>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let consecutive_failures = recent.iter().take_while(|success| !**success).count() as u32;
+        let mut events = Vec::new();
+        let availability_message = if probe.success {
+            format!("服务探测成功，已恢复。{}", probe.detail)
+        } else {
+            format!(
+                "连续 {consecutive_failures} 次探测失败，达到故障阈值 {}。{}",
+                monitor.failure_threshold, probe.detail
+            )
+        };
+        if let Some(event) = service_event_transition(
+            &transaction,
+            monitor,
+            ServiceEventKind::Availability,
+            !probe.success && consecutive_failures >= monitor.failure_threshold,
+            probe.success,
+            availability_message,
+        )? {
+            events.push(event);
+        }
+        if let Some(days) = probe.certificate_days_remaining {
+            let warning = monitor.certificate_warning_days as i32;
+            let message = if days < 0 {
+                format!("TLS 证书已过期 {} 天", days.saturating_abs())
+            } else if days <= warning {
+                format!("TLS 证书剩余 {days} 天，预警阈值为 {warning} 天")
+            } else {
+                format!("TLS 证书有效期已恢复至 {days} 天，高于预警阈值 {warning} 天")
+            };
+            if let Some(event) = service_event_transition(
+                &transaction,
+                monitor,
+                ServiceEventKind::Certificate,
+                days <= warning,
+                days > warning,
+                message,
+            )? {
+                events.push(event);
+            }
+        }
+        transaction.commit()?;
+        drop(connection);
+        Ok((self.service_monitor_view(&monitor.id)?, events))
+    }
+
+    pub fn service_webhook_enabled(&self) -> AppResult<bool> {
+        let value = self.connection()?.query_row(
+            "SELECT value FROM app_settings WHERE key = 'service-webhook-enabled'",
+            [],
+            |row| row.get::<_, String>(0),
+        );
+        match value {
+            Ok(value) => Ok(value == "true"),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn update_service_webhook_enabled(&self, enabled: bool) -> AppResult<()> {
+        self.connection()?.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('service-webhook-enabled', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [if enabled { "true" } else { "false" }],
+        )?;
+        Ok(())
+    }
+
     pub fn workspace_backup(&self) -> AppResult<WorkspaceBackup> {
         Ok(WorkspaceBackup {
             format_version: 1,
@@ -556,7 +930,14 @@ impl Database {
             snippets: self.list_snippets()?,
             runbooks: self.list_runbooks()?,
             port_forwards: self.list_port_forwards()?,
+            service_monitors: self
+                .list_service_monitors()?
+                .into_iter()
+                .map(|view| view.monitor)
+                .collect(),
             monitoring: self.monitoring_settings()?,
+            service_webhook_enabled: Some(self.service_webhook_enabled()?),
+            service_webhook_url: None,
             includes_credentials: false,
             credentials: std::collections::HashMap::new(),
         })
@@ -737,6 +1118,109 @@ impl Database {
     }
 }
 
+fn service_monitor_view(
+    connection: &Connection,
+    monitor: &ServiceMonitor,
+) -> rusqlite::Result<ServiceMonitorView> {
+    let latest = connection
+        .query_row(
+            "SELECT id, monitor_id, success, latency_ms, status_code, detail,
+                    certificate_expires_at, certificate_days_remaining, checked_at
+             FROM service_samples WHERE monitor_id = ?1 ORDER BY id DESC LIMIT 1",
+            [&monitor.id],
+            row_to_service_sample,
+        )
+        .optional()?;
+    let mut statement = connection.prepare(
+        "SELECT e.id, e.monitor_id, m.name, e.kind, e.status, e.message, e.created_at
+         FROM service_events e JOIN service_monitors m ON m.id = e.monitor_id
+         WHERE e.monitor_id = ?1 AND e.status = 'triggered' AND e.id IN (
+            SELECT MAX(id) FROM service_events GROUP BY monitor_id, kind
+         ) ORDER BY e.id DESC",
+    )?;
+    let active_events = statement
+        .query_map([&monitor.id], row_to_service_event)?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut statement = connection.prepare(
+        "SELECT success FROM service_samples WHERE monitor_id = ?1 ORDER BY id DESC LIMIT 20",
+    )?;
+    let recent = statement
+        .query_map([&monitor.id], |row| row.get::<_, bool>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let consecutive_failures = recent.iter().take_while(|success| !**success).count() as u32;
+    Ok(ServiceMonitorView {
+        monitor: monitor.clone(),
+        latest,
+        active_events,
+        consecutive_failures,
+        uptime_24h: service_uptime(connection, &monitor.id, Duration::hours(24))?,
+        uptime_7d: service_uptime(connection, &monitor.id, Duration::days(7))?,
+        uptime_30d: service_uptime(connection, &monitor.id, Duration::days(30))?,
+    })
+}
+
+fn service_uptime(
+    connection: &Connection,
+    monitor_id: &str,
+    duration: Duration,
+) -> rusqlite::Result<Option<f64>> {
+    let cutoff = (Utc::now() - duration).to_rfc3339();
+    let (total, successful): (i64, Option<i64>) = connection.query_row(
+        "SELECT COUNT(*), SUM(success) FROM service_samples WHERE monitor_id = ?1 AND checked_at >= ?2",
+        params![monitor_id, cutoff],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((total > 0).then(|| successful.unwrap_or_default() as f64 / total as f64 * 100.0))
+}
+
+fn service_event_transition(
+    connection: &Connection,
+    monitor: &ServiceMonitor,
+    kind: ServiceEventKind,
+    triggered: bool,
+    recovered: bool,
+    message: String,
+) -> rusqlite::Result<Option<ServiceEvent>> {
+    let previous = connection
+        .query_row(
+            "SELECT status FROM service_events WHERE monitor_id = ?1 AND kind = ?2 ORDER BY id DESC LIMIT 1",
+            params![monitor.id, service_event_kind(kind)],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let active = previous.as_deref() == Some("triggered");
+    let status = if triggered && !active {
+        AlertStatus::Triggered
+    } else if recovered && active {
+        AlertStatus::Recovered
+    } else {
+        return Ok(None);
+    };
+    let created_at = Utc::now().to_rfc3339();
+    connection.execute(
+        "INSERT INTO service_events (monitor_id, kind, status, message, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            monitor.id,
+            service_event_kind(kind),
+            alert_status(status),
+            message,
+            created_at,
+        ],
+    )?;
+    Ok(Some(ServiceEvent {
+        id: connection.last_insert_rowid(),
+        monitor_id: monitor.id.clone(),
+        monitor_name: monitor.name.clone(),
+        kind,
+        status,
+        message,
+        created_at,
+    }))
+}
+
 fn usage_percent(used: u64, total: u64) -> f64 {
     if total == 0 {
         0.0
@@ -746,6 +1230,16 @@ fn usage_percent(used: u64, total: u64) -> f64 {
 }
 
 fn downsample(samples: Vec<MetricSample>, limit: usize) -> Vec<MetricSample> {
+    if samples.len() <= limit {
+        return samples;
+    }
+    let last = samples.len() - 1;
+    (0..limit)
+        .map(|index| samples[index * last / (limit - 1)].clone())
+        .collect()
+}
+
+fn downsample_service_samples(samples: Vec<ServiceSample>, limit: usize) -> Vec<ServiceSample> {
     if samples.len() <= limit {
         return samples;
     }
@@ -780,6 +1274,21 @@ fn validate_monitoring_settings(settings: &MonitoringSettings) -> AppResult<()> 
         ));
     }
     Ok(())
+}
+
+fn service_monitor_kind(kind: ServiceMonitorKind) -> &'static str {
+    match kind {
+        ServiceMonitorKind::Http => "http",
+        ServiceMonitorKind::Tcp => "tcp",
+        ServiceMonitorKind::Dns => "dns",
+    }
+}
+
+fn service_event_kind(kind: ServiceEventKind) -> &'static str {
+    match kind {
+        ServiceEventKind::Availability => "availability",
+        ServiceEventKind::Certificate => "certificate",
+    }
 }
 
 fn alert_kind(kind: AlertKind) -> &'static str {
@@ -992,6 +1501,58 @@ fn row_to_port_forward(row: &Row<'_>) -> rusqlite::Result<PortForwardRule> {
         destination_port: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
+    })
+}
+
+fn row_to_service_monitor(row: &Row<'_>) -> rusqlite::Result<ServiceMonitor> {
+    let kind: String = row.get(2)?;
+    Ok(ServiceMonitor {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        kind: serde_json::from_str(&format!("\"{kind}\""))
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        target: row.get(3)?,
+        port: row.get(4)?,
+        server_id: row.get(5)?,
+        interval_seconds: row.get(6)?,
+        timeout_seconds: row.get(7)?,
+        expected_status: row.get(8)?,
+        keyword: row.get(9)?,
+        failure_threshold: row.get(10)?,
+        certificate_warning_days: row.get(11)?,
+        enabled: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn row_to_service_sample(row: &Row<'_>) -> rusqlite::Result<ServiceSample> {
+    Ok(ServiceSample {
+        id: row.get(0)?,
+        monitor_id: row.get(1)?,
+        success: row.get(2)?,
+        latency_ms: row.get(3)?,
+        status_code: row.get(4)?,
+        detail: row.get(5)?,
+        certificate_expires_at: row.get(6)?,
+        certificate_days_remaining: row.get(7)?,
+        checked_at: row.get(8)?,
+    })
+}
+
+fn row_to_service_event(row: &Row<'_>) -> rusqlite::Result<ServiceEvent> {
+    let kind: String = row.get(3)?;
+    let status: String = row.get(4)?;
+    Ok(ServiceEvent {
+        id: row.get(0)?,
+        monitor_id: row.get(1)?,
+        monitor_name: row.get(2)?,
+        kind: serde_json::from_str(&format!("\"{kind}\""))
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        status: serde_json::from_str(&format!("\"{status}\""))
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        message: row.get(5)?,
+        created_at: row.get(6)?,
     })
 }
 

@@ -115,6 +115,74 @@ export interface AlertEvent {
   createdAt: string;
 }
 
+export type ServiceMonitorKind = "http" | "tcp" | "dns";
+
+export interface ServiceMonitorInput {
+  name: string;
+  kind: ServiceMonitorKind;
+  target: string;
+  port?: number;
+  serverId?: string;
+  intervalSeconds: number;
+  timeoutSeconds: number;
+  expectedStatus: number;
+  keyword?: string;
+  failureThreshold: number;
+  certificateWarningDays: number;
+  enabled: boolean;
+}
+
+export interface ServiceMonitor extends ServiceMonitorInput {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServiceSample {
+  id: number;
+  monitorId: string;
+  success: boolean;
+  latencyMs: number;
+  statusCode?: number;
+  detail: string;
+  certificateExpiresAt?: string;
+  certificateDaysRemaining?: number;
+  checkedAt: string;
+}
+
+export type ServiceEventKind = "availability" | "certificate";
+
+export interface ServiceEvent {
+  id: number;
+  monitorId: string;
+  monitorName: string;
+  kind: ServiceEventKind;
+  status: AlertStatus;
+  message: string;
+  createdAt: string;
+}
+
+export interface ServiceMonitorView {
+  monitor: ServiceMonitor;
+  latest?: ServiceSample;
+  activeEvents: ServiceEvent[];
+  consecutiveFailures: number;
+  uptime24h?: number;
+  uptime7d?: number;
+  uptime30d?: number;
+}
+
+export interface ServiceCheckResult {
+  view: ServiceMonitorView;
+  events: ServiceEvent[];
+  notificationError?: string;
+}
+
+export interface ServiceNotificationSettings {
+  enabled: boolean;
+  hasWebhookUrl: boolean;
+}
+
 export type QuickAction =
   | "system_info"
   | "processes"
@@ -404,6 +472,7 @@ export interface BackupSummary {
   snippetCount: number;
   runbookCount: number;
   portForwardCount: number;
+  serviceMonitorCount: number;
   includesCredentials: boolean;
 }
 
@@ -415,6 +484,7 @@ export interface BackupPreview {
   snippetCount: number;
   runbookCount: number;
   portForwardCount: number;
+  serviceMonitorCount: number;
   includesCredentials: boolean;
 }
 
@@ -427,6 +497,8 @@ export interface BackupRestoreResult {
   skippedRunbooks: number;
   importedPortForwards: number;
   skippedPortForwards: number;
+  importedServiceMonitors: number;
+  skippedServiceMonitors: number;
 }
 
 export interface AppInfo {  version: string;

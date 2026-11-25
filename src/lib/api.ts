@@ -33,6 +33,12 @@ import type {
   Server,
   ServerInput,
   ServerMetrics,
+  ServiceCheckResult,
+  ServiceEvent,
+  ServiceMonitorInput,
+  ServiceMonitorView,
+  ServiceNotificationSettings,
+  ServiceSample,
   Snippet,
   SnippetInput,
   SshConfigImport,
@@ -68,7 +74,7 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events"].includes(command)) return [] as T;
     if (command === "get_monitoring_settings") {
       return {
         autoCollect: false,
@@ -82,9 +88,12 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
         cooldownMinutes: 15,
       } as T;
     }
+    if (command === "get_service_notification_settings") {
+      return { enabled: false, hasWebhookUrl: false } as T;
+    }
     if (command === "get_app_info") {
       return {
-        version: "1.0.0",
+        version: "1.1.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -131,6 +140,22 @@ export const api = {
     call<MonitoringSettings>("update_monitoring_settings", { settings }),
   alertEvents: (serverId?: string) => call<AlertEvent[]>("list_alert_events", { serverId }),
   activeAlerts: () => call<AlertEvent[]>("list_active_alerts"),
+  listServiceMonitors: () => call<ServiceMonitorView[]>("list_service_monitors"),
+  createServiceMonitor: (input: ServiceMonitorInput) =>
+    call<ServiceMonitorView>("create_service_monitor", { input }),
+  updateServiceMonitor: (id: string, input: ServiceMonitorInput) =>
+    call<ServiceMonitorView>("update_service_monitor", { id, input }),
+  setServiceMonitorEnabled: (id: string, enabled: boolean) =>
+    call<ServiceMonitorView>("set_service_monitor_enabled", { id, enabled }),
+  deleteServiceMonitor: (id: string) => call<void>("delete_service_monitor", { id }),
+  checkServiceMonitor: (id: string) => call<ServiceCheckResult>("check_service_monitor", { id }),
+  serviceSamples: (id: string, hours: number) => call<ServiceSample[]>("list_service_samples", { id, hours }),
+  serviceEvents: (id?: string) => call<ServiceEvent[]>("list_service_events", { id }),
+  serviceNotificationSettings: () =>
+    call<ServiceNotificationSettings>("get_service_notification_settings"),
+  updateServiceNotificationSettings: (enabled: boolean, url?: string, clearUrl = false) =>
+    call<ServiceNotificationSettings>("update_service_notification_settings", { input: { enabled, url, clearUrl } }),
+  testServiceWebhook: () => call<void>("test_service_webhook"),
   listDockerContainers: (id: string, allowUnknownHost = false) =>
     call<DockerOverview>("list_docker_containers", { id, allowUnknownHost }),
   runDockerAction: (id: string, containerId: string, action: DockerAction, allowUnknownHost = false) =>

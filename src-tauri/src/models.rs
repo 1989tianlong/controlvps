@@ -151,6 +151,129 @@ impl Default for MonitoringSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceMonitorKind {
+    Http,
+    Tcp,
+    Dns,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMonitorInput {
+    pub name: String,
+    pub kind: ServiceMonitorKind,
+    pub target: String,
+    pub port: Option<u16>,
+    pub server_id: Option<String>,
+    pub interval_seconds: u32,
+    pub timeout_seconds: u32,
+    pub expected_status: u16,
+    pub keyword: Option<String>,
+    pub failure_threshold: u32,
+    pub certificate_warning_days: u32,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMonitor {
+    pub id: String,
+    pub name: String,
+    pub kind: ServiceMonitorKind,
+    pub target: String,
+    pub port: Option<u16>,
+    pub server_id: Option<String>,
+    pub interval_seconds: u32,
+    pub timeout_seconds: u32,
+    pub expected_status: u16,
+    pub keyword: Option<String>,
+    pub failure_threshold: u32,
+    pub certificate_warning_days: u32,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceSample {
+    pub id: i64,
+    pub monitor_id: String,
+    pub success: bool,
+    pub latency_ms: u64,
+    pub status_code: Option<u16>,
+    pub detail: String,
+    pub certificate_expires_at: Option<String>,
+    pub certificate_days_remaining: Option<i32>,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceProbe {
+    pub success: bool,
+    pub latency_ms: u64,
+    pub status_code: Option<u16>,
+    pub detail: String,
+    pub certificate_expires_at: Option<String>,
+    pub certificate_days_remaining: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceEventKind {
+    Availability,
+    Certificate,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceEvent {
+    pub id: i64,
+    pub monitor_id: String,
+    pub monitor_name: String,
+    pub kind: ServiceEventKind,
+    pub status: AlertStatus,
+    pub message: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMonitorView {
+    pub monitor: ServiceMonitor,
+    pub latest: Option<ServiceSample>,
+    pub active_events: Vec<ServiceEvent>,
+    pub consecutive_failures: u32,
+    pub uptime_24h: Option<f64>,
+    pub uptime_7d: Option<f64>,
+    pub uptime_30d: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceCheckResult {
+    pub view: ServiceMonitorView,
+    pub events: Vec<ServiceEvent>,
+    pub notification_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceNotificationSettings {
+    pub enabled: bool,
+    pub has_webhook_url: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceNotificationInput {
+    pub enabled: bool,
+    pub url: Option<String>,
+    pub clear_url: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertKind {
@@ -613,7 +736,13 @@ pub struct WorkspaceBackup {
     pub snippets: Vec<Snippet>,
     pub runbooks: Vec<Runbook>,
     pub port_forwards: Vec<PortForwardRule>,
+    #[serde(default)]
+    pub service_monitors: Vec<ServiceMonitor>,
     pub monitoring: MonitoringSettings,
+    #[serde(default)]
+    pub service_webhook_enabled: Option<bool>,
+    #[serde(default)]
+    pub service_webhook_url: Option<String>,
     pub includes_credentials: bool,
     pub credentials: HashMap<String, BackupCredentials>,
 }
@@ -628,6 +757,7 @@ pub struct BackupSummary {
     pub snippet_count: usize,
     pub runbook_count: usize,
     pub port_forward_count: usize,
+    pub service_monitor_count: usize,
     pub includes_credentials: bool,
 }
 
@@ -641,6 +771,7 @@ pub struct BackupPreview {
     pub snippet_count: usize,
     pub runbook_count: usize,
     pub port_forward_count: usize,
+    pub service_monitor_count: usize,
     pub includes_credentials: bool,
 }
 
@@ -655,4 +786,6 @@ pub struct BackupRestoreResult {
     pub skipped_runbooks: usize,
     pub imported_port_forwards: usize,
     pub skipped_port_forwards: usize,
+    pub imported_service_monitors: usize,
+    pub skipped_service_monitors: usize,
 }

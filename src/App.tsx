@@ -5,6 +5,7 @@ import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
 import type { AlertEvent, MonitoringSettings, Server, ServerMetrics } from "./types";
 import { useMonitoring } from "./hooks/useMonitoring";
+import { useServiceMonitoring } from "./hooks/useServiceMonitoring";
 import { sendSystemNotification } from "./lib/notifications";
 import { ServerForm } from "./components/ServerForm";
 import { OverviewPage } from "./components/OverviewPage";
@@ -54,6 +55,7 @@ export default function App() {
     setMetrics((current) => ({ ...current, [id]: value }));
   }, []);
   const { errors: monitorErrors, collecting } = useMonitoring(servers, monitoringSettings, updateMetrics);
+  const serviceMonitoring = useServiceMonitoring(monitoringSettings?.notificationsEnabled ?? false);
 
   const loadServers = useCallback(async () => {
     setError("");
@@ -117,19 +119,19 @@ export default function App() {
       <div className="sidebar-foot"><LockKeyhole size={17} /><p>本地优先，凭据由 macOS Keychain 保护。</p></div>
     </aside>
     <main className="main-column">
-      <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label">{collecting ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting ? "正在采集监控" : "本地工作区"}</span></header>
+      <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label">{collecting || serviceMonitoring.checkingIds.length > 0 ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting || serviceMonitoring.checkingIds.length > 0 ? "正在采集监控" : "本地工作区"}</span></header>
       <div className="page">
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
         {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
-        {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} />}
+        {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}
         {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} />}
         {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
         <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}
-        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} onWorkspaceRestored={() => { void loadServers(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
+        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
       </div>
     </main>
     <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />

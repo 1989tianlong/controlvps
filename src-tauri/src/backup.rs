@@ -15,7 +15,7 @@ use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     BackupPreview, BackupRestoreResult, BackupSummary, PortForwardInput, RunbookInput,
-    RunbookStepInput, Server, ServerInput, SnippetInput, WorkspaceBackup,
+    RunbookStepInput, Server, ServerInput, ServiceMonitorInput, SnippetInput, WorkspaceBackup,
 };
 use crate::ssh;
 
@@ -46,6 +46,7 @@ pub fn create(
     let mut backup = db.workspace_backup()?;
     backup.includes_credentials = include_credentials;
     if include_credentials {
+        backup.service_webhook_url = crate::service_monitor::webhook_url()?;
         for server in &backup.servers {
             let credentials = ssh::load_credentials(server)?;
             if credentials.password.is_some() || credentials.key_passphrase.is_some() {
@@ -73,6 +74,7 @@ pub fn create(
         snippet_count: backup.snippets.len(),
         runbook_count: backup.runbooks.len(),
         port_forward_count: backup.port_forwards.len(),
+        service_monitor_count: backup.service_monitors.len(),
         includes_credentials: include_credentials,
     })
 }
@@ -100,6 +102,7 @@ pub fn preview(db: &Database, path: &Path, password: &str) -> AppResult<BackupPr
         snippet_count: backup.snippets.len(),
         runbook_count: backup.runbooks.len(),
         port_forward_count: backup.port_forwards.len(),
+        service_monitor_count: backup.service_monitors.len(),
         includes_credentials: backup.includes_credentials,
     })
 }
@@ -116,6 +119,8 @@ pub fn restore(db: &Database, path: &Path, password: &str) -> AppResult<BackupRe
         skipped_runbooks: 0,
         imported_port_forwards: 0,
         skipped_port_forwards: 0,
+        imported_service_monitors: 0,
+        skipped_service_monitors: 0,
     };
     let existing_servers = db.list_servers()?;
     let server_ids = backup
@@ -209,7 +214,45 @@ pub fn restore(db: &Database, path: &Path, password: &str) -> AppResult<BackupRe
         })?;
         result.imported_port_forwards += 1;
     }
+    let existing_monitors = db.list_service_monitors()?;
+    for monitor in &backup.service_monitors {
+        if existing_monitors.iter().any(|item| {
+            item.monitor.name.eq_ignore_ascii_case(&monitor.name)
+                && item.monitor.kind == monitor.kind
+                && item.monitor.target == monitor.target
+        }) {
+            result.skipped_service_monitors += 1;
+            continue;
+        }
+        let server_id = monitor
+            .server_id
+            .as_ref()
+            .and_then(|old_id| context.server_map.get(old_id))
+            .cloned();
+        db.create_service_monitor(&ServiceMonitorInput {
+            name: monitor.name.clone(),
+            kind: monitor.kind,
+            target: monitor.target.clone(),
+            port: monitor.port,
+            server_id,
+            interval_seconds: monitor.interval_seconds,
+            timeout_seconds: monitor.timeout_seconds,
+            expected_status: monitor.expected_status,
+            keyword: monitor.keyword.clone(),
+            failure_threshold: monitor.failure_threshold,
+            certificate_warning_days: monitor.certificate_warning_days,
+            enabled: monitor.enabled,
+        })?;
+        result.imported_service_monitors += 1;
+    }
     db.update_monitoring_settings(&backup.monitoring)?;
+    if let Some(enabled) = backup.service_webhook_enabled {
+        crate::service_monitor::restore_webhook(
+            db,
+            enabled,
+            backup.service_webhook_url.as_deref(),
+        )?;
+    }
     Ok(result)
 }
 
