@@ -30,6 +30,7 @@ import type {
   Runbook,
   RunbookInput,
   RunbookResult,
+  SecurityReport,
   Server,
   ServerInput,
   ServerMetrics,
@@ -93,7 +94,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.1.0",
+        version: "1.2.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -174,6 +175,8 @@ export const api = {
     call<SystemdActionResult>("run_systemd_action", { id, unit, action, allowUnknownHost }),
   getSystemdLogs: (id: string, unit: string, allowUnknownHost = false) =>
     call<SystemdLogs>("get_systemd_logs", { id, unit, allowUnknownHost }),
+  collectSecurityReport: (id: string, allowUnknownHost = false) =>
+    call<SecurityReport>("collect_security_report", { id, allowUnknownHost }),
   quickAction: (id: string, action: QuickAction, allowUnknownHost = false) =>
     call<ActionResult>("run_quick_action", { id, action, allowUnknownHost }),
   operationLogs: (serverId?: string) => call<OperationLog[]>("list_operation_logs", { serverId }),
@@ -185,8 +188,8 @@ export const api = {
   createRunbook: (input: RunbookInput) => call<Runbook>("create_runbook", { input }),
   updateRunbook: (id: string, input: RunbookInput) => call<Runbook>("update_runbook", { id, input }),
   deleteRunbook: (id: string) => call<void>("delete_runbook", { id }),
-  runRunbook: (id: string, ids: string[], concurrency: number) =>
-    call<RunbookResult>("run_runbook", { id, ids, concurrency }),
+  runRunbook: (id: string, ids: string[], concurrency: number, canaryCount: number) =>
+    call<RunbookResult>("run_runbook", { id, ids, concurrency, canaryCount }),
   runBatchCommand: (ids: string[], command: string, concurrency: number) =>
     call<BatchResult>("run_batch_command", { ids, command, concurrency }),
   listPortForwards: () => call<PortForwardRule[]>("list_port_forwards"),

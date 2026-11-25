@@ -9,6 +9,7 @@ mod files;
 mod metrics;
 mod models;
 mod runbook;
+mod security;
 mod service_monitor;
 mod ssh;
 mod ssh_config;
@@ -86,6 +87,7 @@ pub fn run() {
             commands::list_systemd_services,
             commands::run_systemd_action,
             commands::get_systemd_logs,
+            commands::collect_security_report,
             commands::run_quick_action,
             commands::list_operation_logs,
             commands::list_snippets,

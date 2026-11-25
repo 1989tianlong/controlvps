@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, TerminalSquare, X } from "lucide-react";
+import { Activity, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
@@ -17,12 +17,14 @@ import { SettingsPage } from "./components/SettingsPage";
 import { AutomationPage } from "./components/AutomationPage";
 import { TunnelsPage } from "./components/TunnelsPage";
 import { MonitoringPage } from "./components/MonitoringPage";
+import { SecurityCenter } from "./components/SecurityCenter";
 import { TerminalWorkspace, type TerminalRequest } from "./components/TerminalWorkspace";
 
 const pages = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
   { id: "servers", label: "我的 VPS", icon: ServerIcon },
   { id: "monitoring", label: "监控告警", icon: Activity },
+  { id: "security", label: "补丁与安全", icon: ShieldCheck },
   { id: "terminal", label: "终端工作区", icon: TerminalSquare },
   { id: "automation", label: "批量运维", icon: ListChecks },
   { id: "tunnels", label: "隧道中心", icon: Network },
@@ -46,6 +48,7 @@ export default function App() {
   const [metrics, setMetrics] = useState<Record<string, ServerMetrics>>({});
   const [monitoringSettings, setMonitoringSettings] = useState<MonitoringSettings>();
   const [terminalRequest, setTerminalRequest] = useState<TerminalRequest>();
+  const [automationMode, setAutomationMode] = useState<"snippets" | "runbooks">("snippets");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
@@ -125,7 +128,8 @@ export default function App() {
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
         {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
         {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}
-        {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} />}
+        {page === "security" && <SecurityCenter servers={servers} trusted={execute} onAdd={add} onOpenRunbooks={() => { setAutomationMode("runbooks"); navigate("automation"); }} />}
+        {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} requestedMode={automationMode} />}
         {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
         <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>
         {page === "discover" && <DiscoveryPage />}

@@ -15,10 +15,14 @@ interface Props {
   servers: Server[];
   trusted: TrustedExecutor;
   onAdd: () => void;
+  requestedMode?: "snippets" | "runbooks";
 }
 
 export function AutomationPage(props: Props) {
   const [mode, setMode] = useState<"snippets" | "runbooks">("snippets");
+  useEffect(() => {
+    if (props.requestedMode) setMode(props.requestedMode);
+  }, [props.requestedMode]);
   return <>
     <div className="page-heading"><div><h1>批量运维</h1><p>保存常用命令，或使用分步 Runbook 执行可审查的运维流程。</p></div>{mode === "runbooks" && <span className="badge badge-cool"><BookOpenCheck size={15} />失败即停止当前服务器后续步骤</span>}</div>
     <div className="workspace-switch" role="tablist" aria-label="运维模式"><button className="tab" type="button" role="tab" aria-selected={mode === "snippets"} onClick={() => setMode("snippets")}><ListChecks size={16} />命令片段</button><button className="tab" type="button" role="tab" aria-selected={mode === "runbooks"} onClick={() => setMode("runbooks")}><BookOpenCheck size={16} />Runbook</button></div>

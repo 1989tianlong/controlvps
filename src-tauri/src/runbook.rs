@@ -13,11 +13,45 @@ pub fn execute(
     runbook: Runbook,
     known_hosts: PathBuf,
     concurrency: usize,
+    canary_count: usize,
 ) -> AppResult<RunbookResult> {
     let started = Instant::now();
+    let total = jobs.len();
+    let canary_count = canary_count.min(total);
+    let mut results = execute_jobs(&jobs[..canary_count], &runbook, &known_hosts, concurrency)?;
+    let canary_failed = results.iter().any(|result| !result.success);
+    if !canary_failed {
+        results.extend(execute_jobs(
+            &jobs[canary_count..],
+            &runbook,
+            &known_hosts,
+            concurrency,
+        )?);
+    }
+    let success_count = results.iter().filter(|result| result.success).count();
+    let skipped_count = total - results.len();
+    Ok(RunbookResult {
+        runbook_name: runbook.name,
+        failure_count: results.len() - success_count,
+        success_count,
+        skipped_count,
+        results,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn execute_jobs(
+    jobs: &[ConnectionJob],
+    runbook: &Runbook,
+    known_hosts: &PathBuf,
+    concurrency: usize,
+) -> AppResult<Vec<RunbookServerResult>> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
     let next = AtomicUsize::new(0);
     let results = Mutex::new(Vec::with_capacity(jobs.len()));
-    let workers = concurrency.clamp(1, jobs.len().max(1));
+    let workers = concurrency.clamp(1, jobs.len());
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| loop {
@@ -25,7 +59,7 @@ pub fn execute(
                 let Some(job) = jobs.get(index) else {
                     break;
                 };
-                let result = execute_job(job, &runbook, &known_hosts);
+                let result = execute_job(job, runbook, known_hosts);
                 if let Ok(mut results) = results.lock() {
                     results.push((index, result));
                 }
@@ -36,18 +70,7 @@ pub fn execute(
         .into_inner()
         .map_err(|_| AppError::Message("Runbook 执行结果锁不可用".into()))?;
     results.sort_by_key(|(index, _)| *index);
-    let results = results
-        .into_iter()
-        .map(|(_, result)| result)
-        .collect::<Vec<_>>();
-    let success_count = results.iter().filter(|result| result.success).count();
-    Ok(RunbookResult {
-        runbook_name: runbook.name,
-        failure_count: results.len() - success_count,
-        success_count,
-        results,
-        duration_ms: started.elapsed().as_millis() as u64,
-    })
+    Ok(results.into_iter().map(|(_, result)| result).collect())
 }
 
 fn execute_job(

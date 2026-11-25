@@ -333,6 +333,7 @@ export interface RunbookResult {
   results: RunbookServerResult[];
   successCount: number;
   failureCount: number;
+  skippedCount: number;
   durationMs: number;
 }
 
@@ -462,6 +463,59 @@ export interface SystemdActionResult {
 export interface SystemdLogs {
   unit: string;
   output: string;
+}
+
+export type PackageUpdateKind = "normal" | "security";
+
+export interface PackageUpdate {
+  name: string;
+  currentVersion: string;
+  candidateVersion: string;
+  source: string;
+  kind: PackageUpdateKind;
+  kernel: boolean;
+}
+
+export interface ListeningPort {
+  protocol: string;
+  bindAddress: string;
+  port: number;
+  process: string;
+  exposure: "all_interfaces" | "external_interface" | "localhost";
+}
+
+export interface FirewallStatus {
+  backend: string;
+  state: string;
+  active: boolean;
+  details: string;
+}
+
+export type SecuritySeverity = "pass" | "info" | "warning" | "critical";
+
+export interface SecurityFinding {
+  id: string;
+  title: string;
+  severity: SecuritySeverity;
+  value: string;
+  detail: string;
+  recommendation: string;
+  remediationCommand?: string;
+}
+
+export interface SecurityReport {
+  serverId: string;
+  hostname: string;
+  os: string;
+  packageManager: "apt" | "dnf" | "yum" | "apk" | "unknown";
+  updates: PackageUpdate[];
+  rebootRequired: boolean;
+  rebootReason: string;
+  listeningPorts: ListeningPort[];
+  firewall: FirewallStatus;
+  findings: SecurityFinding[];
+  warnings: string[];
+  collectedAt: string;
 }
 
 export interface BackupSummary {

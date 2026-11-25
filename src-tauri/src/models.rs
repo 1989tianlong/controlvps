@@ -514,6 +514,7 @@ pub struct RunbookResult {
     pub results: Vec<RunbookServerResult>,
     pub success_count: usize,
     pub failure_count: usize,
+    pub skipped_count: usize,
     pub duration_ms: u64,
 }
 
@@ -745,6 +746,81 @@ pub struct WorkspaceBackup {
     pub service_webhook_url: Option<String>,
     pub includes_credentials: bool,
     pub credentials: HashMap<String, BackupCredentials>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageUpdateKind {
+    Normal,
+    Security,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageUpdate {
+    pub name: String,
+    pub current_version: String,
+    pub candidate_version: String,
+    pub source: String,
+    pub kind: PackageUpdateKind,
+    pub kernel: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListeningPort {
+    pub protocol: String,
+    pub bind_address: String,
+    pub port: u16,
+    pub process: String,
+    pub exposure: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirewallStatus {
+    pub backend: String,
+    pub state: String,
+    pub active: bool,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecuritySeverity {
+    Pass,
+    Info,
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityFinding {
+    pub id: String,
+    pub title: String,
+    pub severity: SecuritySeverity,
+    pub value: String,
+    pub detail: String,
+    pub recommendation: String,
+    pub remediation_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityReport {
+    pub server_id: String,
+    pub hostname: String,
+    pub os: String,
+    pub package_manager: String,
+    pub updates: Vec<PackageUpdate>,
+    pub reboot_required: bool,
+    pub reboot_reason: String,
+    pub listening_ports: Vec<ListeningPort>,
+    pub firewall: FirewallStatus,
+    pub findings: Vec<SecurityFinding>,
+    pub warnings: Vec<String>,
+    pub collected_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

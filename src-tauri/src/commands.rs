@@ -17,12 +17,13 @@ use crate::models::{
     ConnectionReport, ConnectionTest, DockerAction, DockerActionResult, DockerLogs, DockerOverview,
     FileListing, FileTransfer, FileTransferKind, FileTransferTask, MetricSample,
     MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook,
-    RunbookInput, RunbookResult, Server, ServerInput, ServerMetrics, ServiceCheckResult,
-    ServiceEvent, ServiceMonitorInput, ServiceMonitorView, ServiceNotificationInput,
-    ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput, SshConfigImport,
-    SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview, TerminalSession,
-    TunnelStatus,
+    RunbookInput, RunbookResult, SecurityReport, Server, ServerInput, ServerMetrics,
+    ServiceCheckResult, ServiceEvent, ServiceMonitorInput, ServiceMonitorView,
+    ServiceNotificationInput, ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput,
+    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
+    TerminalSession, TunnelStatus,
 };
+use crate::security;
 use crate::service_monitor::{self, ServiceMonitorRegistry};
 use crate::ssh;
 use crate::ssh_config;
@@ -649,6 +650,37 @@ pub async fn get_systemd_logs(
 }
 
 #[tauri::command]
+pub async fn collect_security_report(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<SecurityReport> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        security::collect(&job.server.id, &connection.session)
+    })
+    .await;
+    log_operation_result(&db, &id, "补丁与安全只读审计", &result, |report| {
+        format!(
+            "{} 项更新，{} 个监听端口，{} 条提示",
+            report.updates.len(),
+            report.listening_ports.len(),
+            report.warnings.len()
+        )
+    });
+    result
+}
+
+#[tauri::command]
 pub async fn run_quick_action(
     db: State<'_, Database>,
     paths: State<'_, AppPaths>,
@@ -831,6 +863,7 @@ pub async fn run_runbook(
     id: String,
     ids: Vec<String>,
     concurrency: usize,
+    canary_count: usize,
 ) -> CommandResult<RunbookResult> {
     if ids.is_empty() || ids.len() > 50 {
         return Err(CommandError::from(AppError::Message(
@@ -849,14 +882,20 @@ pub async fn run_runbook(
             unique_ids.push(server_id);
         }
     }
+    if canary_count > 10 || canary_count >= unique_ids.len() {
+        return Err(CommandError::from(AppError::Message(
+            "灰度首批必须为 0 到 10 台，且小于目标总数".into(),
+        )));
+    }
     let mut jobs = Vec::with_capacity(unique_ids.len());
     for server_id in unique_ids {
         jobs.push(connection_job(&db, &server_id)?);
     }
     let known_hosts = paths.known_hosts.clone();
-    let result =
-        run_blocking(move || crate::runbook::execute(jobs, runbook, known_hosts, concurrency))
-            .await?;
+    let result = run_blocking(move || {
+        crate::runbook::execute(jobs, runbook, known_hosts, concurrency, canary_count)
+    })
+    .await?;
     for server in &result.results {
         if let Some(error) = &server.error {
             let _ = db.log_operation(
