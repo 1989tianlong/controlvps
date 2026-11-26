@@ -48,6 +48,10 @@ impl Database {
                 auth_profile_id TEXT,
                 cloud_account_id TEXT,
                 cloud_resource_id TEXT,
+                inherit_port INTEGER NOT NULL DEFAULT 0,
+                inherit_username INTEGER NOT NULL DEFAULT 0,
+                inherit_jump INTEGER NOT NULL DEFAULT 0,
+                inherit_auth INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 has_password INTEGER NOT NULL DEFAULT 0,
@@ -307,6 +311,24 @@ impl Database {
                 connection.execute(&format!("ALTER TABLE servers ADD COLUMN {column} TEXT"), [])?;
             }
         }
+        for column in [
+            "inherit_port",
+            "inherit_username",
+            "inherit_jump",
+            "inherit_auth",
+        ] {
+            let exists = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
+                [column],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !exists {
+                connection.execute(
+                    &format!("ALTER TABLE servers ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"),
+                    [],
+                )?;
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -324,6 +346,7 @@ impl Database {
             "SELECT id, name, host, port, username, auth_method, private_key_path,
                     group_name, tags, provider, region, notes, cost, currency,
                     expires_at, jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
+                    inherit_port, inherit_username, inherit_jump, inherit_auth,
                     created_at, updated_at, has_password, has_key_passphrase
              FROM servers ORDER BY COALESCE(group_name, ''), name COLLATE NOCASE",
         )?;
@@ -338,6 +361,7 @@ impl Database {
                 "SELECT id, name, host, port, username, auth_method, private_key_path,
                         group_name, tags, provider, region, notes, cost, currency,
                         expires_at, jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
+                        inherit_port, inherit_username, inherit_jump, inherit_auth,
                         created_at, updated_at, has_password, has_key_passphrase
                  FROM servers WHERE id = ?1",
                 [id],
@@ -360,8 +384,9 @@ impl Database {
                 id, name, host, port, username, auth_method, private_key_path,
                 group_name, tags, provider, region, notes, cost, currency, expires_at,
                 jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
+                inherit_port, inherit_username, inherit_jump, inherit_auth,
                 created_at, updated_at, has_password, has_key_passphrase
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 id,
                 input.name.trim(),
@@ -382,6 +407,10 @@ impl Database {
                 clean(input.auth_profile_id.as_deref()),
                 clean(input.cloud_account_id.as_deref()),
                 clean(input.cloud_resource_id.as_deref()),
+                input.inherit_port,
+                input.inherit_username,
+                input.inherit_jump,
+                input.inherit_auth,
                 now,
                 now,
                 input.password.as_deref().is_some_and(|value| !value.is_empty()),
@@ -410,8 +439,9 @@ impl Database {
                 auth_method = ?6, private_key_path = ?7, group_name = ?8, tags = ?9,
                 provider = ?10, region = ?11, notes = ?12, cost = ?13, currency = ?14,
                 expires_at = ?15, jump_server_id = ?16, auth_profile_id = ?17,
-                cloud_account_id = ?18, cloud_resource_id = ?19, updated_at = ?20,
-                has_password = ?21, has_key_passphrase = ?22
+                cloud_account_id = ?18, cloud_resource_id = ?19,
+                inherit_port = ?20, inherit_username = ?21, inherit_jump = ?22, inherit_auth = ?23,
+                updated_at = ?24, has_password = ?25, has_key_passphrase = ?26
              WHERE id = ?1",
             params![
                 id,
@@ -433,6 +463,10 @@ impl Database {
                 clean(input.auth_profile_id.as_deref()),
                 clean(input.cloud_account_id.as_deref()),
                 clean(input.cloud_resource_id.as_deref()),
+                input.inherit_port,
+                input.inherit_username,
+                input.inherit_jump,
+                input.inherit_auth,
                 Utc::now().to_rfc3339(),
                 has_password,
                 has_key_passphrase,
@@ -2834,10 +2868,14 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
         auth_profile_id: row.get(16)?,
         cloud_account_id: row.get(17)?,
         cloud_resource_id: row.get(18)?,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-        has_password: row.get(21)?,
-        has_key_passphrase: row.get(22)?,
+        inherit_port: row.get(19)?,
+        inherit_username: row.get(20)?,
+        inherit_jump: row.get(21)?,
+        inherit_auth: row.get(22)?,
+        created_at: row.get(23)?,
+        updated_at: row.get(24)?,
+        has_password: row.get(25)?,
+        has_key_passphrase: row.get(26)?,
     })
 }
 

@@ -35,6 +35,14 @@ pub struct ServerInput {
     pub cloud_account_id: Option<String>,
     #[serde(default)]
     pub cloud_resource_id: Option<String>,
+    #[serde(default)]
+    pub inherit_port: bool,
+    #[serde(default)]
+    pub inherit_username: bool,
+    #[serde(default)]
+    pub inherit_jump: bool,
+    #[serde(default)]
+    pub inherit_auth: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +203,14 @@ pub struct Server {
     pub auth_profile_id: Option<String>,
     pub cloud_account_id: Option<String>,
     pub cloud_resource_id: Option<String>,
+    #[serde(default)]
+    pub inherit_port: bool,
+    #[serde(default)]
+    pub inherit_username: bool,
+    #[serde(default)]
+    pub inherit_jump: bool,
+    #[serde(default)]
+    pub inherit_auth: bool,
     pub created_at: String,
     pub updated_at: String,
     pub has_password: bool,

@@ -26,6 +26,10 @@ export interface ServerInput {
   authProfileId?: string;
   cloudAccountId?: string;
   cloudResourceId?: string;
+  inheritPort?: boolean;
+  inheritUsername?: boolean;
+  inheritJump?: boolean;
+  inheritAuth?: boolean;
 }
 
 export type CloudProvider = "digital_ocean" | "tailscale";
@@ -137,6 +141,10 @@ export interface Server extends Omit<ServerInput, "password" | "keyPassphrase"> 
   updatedAt: string;
   hasPassword: boolean;
   hasKeyPassphrase: boolean;
+  inheritPort: boolean;
+  inheritUsername: boolean;
+  inheritJump: boolean;
+  inheritAuth: boolean;
 }
 
 export interface ConnectionTest {

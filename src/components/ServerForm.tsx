@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
-import type { AuthMethod, Server, ServerInput } from "../types";
+import type { AuthMethod, AuthProfile, Server, ServerGroup, ServerInput } from "../types";
 
 const emptyForm: ServerInput = {
   name: "",
@@ -12,6 +12,10 @@ const emptyForm: ServerInput = {
   privateKeyPath: "~/.ssh/id_ed25519",
   tags: [],
   currency: "USD",
+  inheritPort: false,
+  inheritUsername: false,
+  inheritJump: false,
+  inheritAuth: false,
 };
 
 interface Props {
@@ -25,8 +29,12 @@ interface Props {
 export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<ServerInput>(emptyForm);
+  const [groups, setGroups] = useState<ServerGroup[]>([]);
+  const [profiles, setProfiles] = useState<AuthProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const selectedGroup = groups.find((group) => group.name === form.groupName);
+  const inheritedProfile = profiles.find((profile) => profile.id === (form.inheritAuth ? selectedGroup?.authProfileId : form.authProfileId));
 
   useEffect(() => {
     if (!open) return;
@@ -47,7 +55,18 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
       currency: server.currency ?? "USD",
       expiresAt: server.expiresAt ?? "",
       jumpServerId: server.jumpServerId ?? "",
+      authProfileId: server.authProfileId ?? "",
+      inheritPort: server.inheritPort,
+      inheritUsername: server.inheritUsername,
+      inheritJump: server.inheritJump,
+      inheritAuth: server.inheritAuth,
     } : emptyForm);
+    void Promise.all([api.serverGroups(), api.authProfiles()])
+      .then(([nextGroups, nextProfiles]) => {
+        setGroups(nextGroups);
+        setProfiles(nextProfiles);
+      })
+      .catch((reason) => setError(errorMessage(reason)));
     dialogRef.current?.showModal();
   }, [open, server]);
 
@@ -67,7 +86,18 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
     setBusy(true);
     setError("");
     try {
-      const saved = server ? await api.updateServer(server.id, form) : await api.createServer(form);
+      const payload: ServerInput = {
+        ...form,
+        port: form.inheritPort ? 22 : form.port,
+        username: form.inheritUsername ? "root" : form.username,
+        jumpServerId: form.inheritJump ? undefined : form.jumpServerId,
+        authMethod: form.inheritAuth ? "key" : form.authMethod,
+        privateKeyPath: form.inheritAuth ? "~/.ssh/id_ed25519" : form.privateKeyPath,
+        authProfileId: form.inheritAuth ? undefined : form.authProfileId,
+        password: form.inheritAuth ? undefined : form.password,
+        keyPassphrase: form.inheritAuth ? undefined : form.keyPassphrase,
+      };
+      const saved = server ? await api.updateServer(server.id, payload) : await api.createServer(payload);
       onSaved(saved);
       dialogRef.current?.close();
       onClose();
@@ -98,7 +128,11 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
               </div>
               <div className="field">
                 <label htmlFor="server-group">分组</label>
-                <input className="input" id="server-group" name="group" autoComplete="off" value={form.groupName ?? ""} onChange={(e) => update("groupName", e.target.value)} placeholder="生产环境" />
+                <select className="select w-full" id="server-group" name="group" value={groups.some((group) => group.name === form.groupName) ? form.groupName : ""} onChange={(e) => update("groupName", e.target.value)}>
+                  <option value="">不使用分组</option>
+                  {groups.map((group) => <option key={group.id} value={group.name}>{group.name}</option>)}
+                </select>
+                <p className="field-help">{selectedGroup ? "连接时沿用分组里勾选的默认项；这台机器单独填写的值优先。" : "分组在「云资产」中创建。自由输入的旧分组名称不会带连接默认值。"}</p>
               </div>
               <div className="field span-2">
                 <label htmlFor="server-host">IP 或域名，必填</label>
@@ -106,11 +140,13 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
               </div>
               <div className="field">
                 <label htmlFor="server-port">SSH 端口</label>
-                <input className="input" id="server-port" name="port" type="number" inputMode="numeric" min={1} max={65535} required value={form.port} onChange={(e) => update("port", Number(e.target.value))} />
+                <input className="input" id="server-port" name="port" type="number" inputMode="numeric" min={1} max={65535} required={!form.inheritPort} disabled={form.inheritPort} value={form.inheritPort ? selectedGroup?.defaultPort ?? "" : form.port} onChange={(e) => update("port", Number(e.target.value))} />
+                {selectedGroup?.defaultPort && <label className="check-row"><input type="checkbox" checked={Boolean(form.inheritPort)} onChange={(e) => update("inheritPort", e.target.checked)} />沿用分组端口 {selectedGroup.defaultPort}</label>}
               </div>
               <div className="field">
-                <label htmlFor="server-user">用户名，必填</label>
-                <input className="input" id="server-user" name="username" autoComplete="off" required value={form.username} onChange={(e) => update("username", e.target.value)} />
+                <label htmlFor="server-user">用户名{form.inheritUsername ? "" : "，必填"}</label>
+                <input className="input" id="server-user" name="username" autoComplete="off" required={!form.inheritUsername} disabled={form.inheritUsername} value={form.inheritUsername ? selectedGroup?.defaultUsername ?? "" : form.username} onChange={(e) => update("username", e.target.value)} />
+                {selectedGroup?.defaultUsername && <label className="check-row"><input type="checkbox" checked={Boolean(form.inheritUsername)} onChange={(e) => update("inheritUsername", e.target.checked)} />沿用分组用户名 {selectedGroup.defaultUsername}</label>}
               </div>
             </div>
           </section>
@@ -118,25 +154,27 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
             <h2>连接路由</h2>
             <div className="field">
               <label htmlFor="jump-server">跳板机</label>
-              <select className="select w-full" id="jump-server" name="jumpServerId" value={form.jumpServerId ?? ""} onChange={(e) => update("jumpServerId", e.target.value || undefined)}>
+              <select className="select w-full" id="jump-server" name="jumpServerId" disabled={form.inheritJump} value={form.inheritJump ? selectedGroup?.jumpServerId ?? "" : form.jumpServerId ?? ""} onChange={(e) => update("jumpServerId", e.target.value || undefined)}>
                 <option value="">直接连接</option>
                 {servers.filter((item) => item.id !== server?.id && !item.jumpServerId).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.host}:{item.port}</option>)}
               </select>
+              {selectedGroup && <label className="check-row"><input type="checkbox" checked={Boolean(form.inheritJump)} onChange={(e) => update("inheritJump", e.target.checked)} />沿用分组跳板机{selectedGroup.jumpServerId ? "" : "（分组当前为直接连接）"}</label>}
               <p className="field-help">先通过本机连接跳板机，再由跳板机访问目标 SSH 端口。当前支持一级跳板，两台服务器分别校验主机密钥并使用各自凭据。</p>
             </div>
           </section>
           <section className="form-section">
             <h2>认证</h2>
             <div className="form-grid">
+              {selectedGroup && <div className="field span-2"><label className="check-row"><input type="checkbox" checked={Boolean(form.inheritAuth)} onChange={(e) => update("inheritAuth", e.target.checked)} />沿用分组认证{inheritedProfile ? `：${inheritedProfile.name}` : "（分组当前未设置认证身份）"}</label></div>}
               <div className="field span-2">
                 <label htmlFor="auth-method">认证方式</label>
-                <select className="select w-full" id="auth-method" name="authMethod" value={form.authMethod} onChange={(e) => update("authMethod", e.target.value as AuthMethod)}>
+                <select className="select w-full" id="auth-method" name="authMethod" disabled={form.inheritAuth} value={form.inheritAuth ? inheritedProfile?.authMethod ?? "agent" : form.authMethod} onChange={(e) => update("authMethod", e.target.value as AuthMethod)}>
                   <option value="key">SSH 私钥</option>
                   <option value="password">密码</option>
                   <option value="agent">SSH Agent</option>
                 </select>
               </div>
-              {form.authMethod === "key" && <>
+              {!form.inheritAuth && form.authMethod === "key" && <>
                 <div className="field span-2">
                   <label htmlFor="key-path">私钥路径，必填</label>
                   <input className="input" id="key-path" name="privateKeyPath" required value={form.privateKeyPath ?? ""} onChange={(e) => update("privateKeyPath", e.target.value)} />
@@ -147,12 +185,12 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
                   <input className="input" id="key-passphrase" name="keyPassphrase" type="password" autoComplete="new-password" value={form.keyPassphrase ?? ""} onChange={(e) => update("keyPassphrase", e.target.value)} />
                 </div>
               </>}
-              {form.authMethod === "password" && <div className="field span-2">
+              {!form.inheritAuth && form.authMethod === "password" && <div className="field span-2">
                 <label htmlFor="server-password">SSH 密码{server ? "，留空表示保留" : "，必填"}</label>
                 <input className="input" id="server-password" name="password" type="password" autoComplete="new-password" required={!server} value={form.password ?? ""} onChange={(e) => update("password", e.target.value)} />
                 <p className="field-help">密码保存在 macOS Keychain，不会写入 SQLite。</p>
               </div>}
-              {form.authMethod === "agent" && <p className="text-muted span-2">使用当前系统 SSH Agent 中已加载的身份，请确认 `ssh-add -L` 能列出密钥。</p>}
+              {(form.inheritAuth ? inheritedProfile?.authMethod === "agent" : form.authMethod === "agent") && <p className="text-muted span-2">使用当前系统 SSH Agent 中已加载的身份，请确认 `ssh-add -L` 能列出密钥。</p>}
             </div>
           </section>
           <section className="form-section">

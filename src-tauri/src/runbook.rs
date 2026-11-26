@@ -228,7 +228,22 @@ fn apply_group_defaults(
     let Ok(group) = db.get_server_group_by_name(group_name) else {
         return Ok(());
     };
-    if server.auth_profile_id.is_none() {
+    if server.inherit_port {
+        if let Some(port) = group.default_port {
+            server.port = port;
+        }
+    }
+    if server.inherit_username {
+        if let Some(username) = group
+            .default_username
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            server.username = username.to_string();
+        }
+    }
+    if server.auth_profile_id.is_none() && server.inherit_auth {
         server.auth_profile_id = group.auth_profile_id.clone();
     }
     if let Some(profile_id) = server.auth_profile_id.as_deref() {
@@ -242,6 +257,9 @@ fn apply_group_defaults(
 }
 
 fn inherited_jump_id(db: &Database, server: &crate::models::Server) -> AppResult<Option<String>> {
+    if !server.inherit_jump {
+        return Ok(server.jump_server_id.clone());
+    }
     if let Some(jump_id) = server.jump_server_id.clone() {
         return Ok(Some(jump_id));
     }

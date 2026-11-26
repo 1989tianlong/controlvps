@@ -321,6 +321,10 @@ impl RestoreContext<'_> {
             auth_profile_id: None,
             cloud_account_id: None,
             cloud_resource_id: None,
+            inherit_port: server.inherit_port,
+            inherit_username: server.inherit_username,
+            inherit_jump: server.inherit_jump,
+            inherit_auth: server.inherit_auth,
         };
         let imported = self.db.create_server(&input)?;
         if let Err(error) = ssh::save_credentials(&imported, &input) {

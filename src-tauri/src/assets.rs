@@ -276,6 +276,13 @@ pub fn import(db: &Database, request: &CloudImportRequest) -> AppResult<CloudImp
             auth_profile_id,
             cloud_account_id: Some(account.id.clone()),
             cloud_resource_id: Some(resource.resource_id.clone()),
+            inherit_port: request.port.is_none(),
+            inherit_username: request
+                .username
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty()),
+            inherit_jump: request.jump_server_id.is_none(),
+            inherit_auth: request.auth_profile_id.is_none(),
         };
         let server = db.create_server(&input)?;
         ssh::save_credentials(&server, &input)?;
@@ -480,6 +487,10 @@ fn server_to_input(server: &Server) -> ServerInput {
         auth_profile_id: server.auth_profile_id.clone(),
         cloud_account_id: server.cloud_account_id.clone(),
         cloud_resource_id: server.cloud_resource_id.clone(),
+        inherit_port: server.inherit_port,
+        inherit_username: server.inherit_username,
+        inherit_jump: server.inherit_jump,
+        inherit_auth: server.inherit_auth,
     }
 }
 

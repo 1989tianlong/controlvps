@@ -158,7 +158,11 @@ export function AssetsPage({ servers, onChanged }: Props) {
           <div className="form-grid"><input className="input" name="defaultUsername" placeholder="默认用户名" aria-label="默认用户名" /><input className="input" name="defaultPort" type="number" min={1} max={65535} placeholder="默认端口" aria-label="默认端口" /></div>
           <button className="btn" type="submit" disabled={busy === "group"}>保存分组默认值</button>
         </form>
-        <div className="stack mt-6">{groups.map((group) => <div className="list-row" key={group.id}><div><strong>{group.name}</strong><span className="table-meta">{group.defaultUsername || "root"}:{group.defaultPort || 22}{group.jumpServerId ? " · 继承跳板机" : ""}{group.authProfileId ? " · 继承认证" : ""}</span></div><button className="icon-btn" type="button" aria-label={`删除分组 ${group.name}`} onClick={() => void run(group.id, async () => { await api.deleteServerGroup(group.id); await load(); })}><Trash2 size={16} /></button></div>)}</div>
+        <div className="stack mt-6">{groups.map((group) => {
+          const jump = servers.find((server) => server.id === group.jumpServerId);
+          const profile = profiles.find((item) => item.id === group.authProfileId);
+          return <div className="list-row" key={group.id}><div><strong>{group.name}</strong><span className="table-meta">{group.defaultUsername || "未设置用户名"}:{group.defaultPort || "未设置端口"}{jump ? ` · 跳板 ${jump.name}` : group.jumpServerId ? " · 跳板机已删除" : " · 直接连接"}{profile ? ` · 认证 ${profile.name}` : group.authProfileId ? " · 认证身份已删除" : ""}</span></div><button className="icon-btn" type="button" aria-label={`删除分组 ${group.name}`} onClick={() => void run(group.id, async () => { await api.deleteServerGroup(group.id); await load(); })}><Trash2 size={16} /></button></div>;
+        })}</div>
       </section>
     </div>
     <section className="panel panel-body mt-6">

@@ -404,6 +404,10 @@ pub fn import_ssh_config(db: State<'_, Database>, path: String) -> CommandResult
             auth_profile_id: None,
             cloud_account_id: None,
             cloud_resource_id: None,
+            inherit_port: false,
+            inherit_username: false,
+            inherit_jump: false,
+            inherit_auth: false,
         };
         match db.create_server(&input) {
             Ok(server) => {
