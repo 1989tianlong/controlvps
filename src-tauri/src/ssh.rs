@@ -95,6 +95,7 @@ pub fn save_credentials(server: &Server, input: &crate::models::ServerInput) -> 
 pub fn delete_credentials(server_id: &str) -> AppResult<()> {
     delete_secret(server_id, "password")?;
     delete_secret(server_id, "key-passphrase")?;
+    delete_secret(server_id, "compose-environments")?;
     Ok(())
 }
 

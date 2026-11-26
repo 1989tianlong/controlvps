@@ -940,6 +940,7 @@ impl Database {
             service_webhook_url: None,
             includes_credentials: false,
             credentials: std::collections::HashMap::new(),
+            compose_environments: std::collections::HashMap::new(),
         })
     }
 

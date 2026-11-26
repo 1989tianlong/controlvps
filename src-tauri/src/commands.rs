@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::alerts::{self, AlertRegistry};
 use crate::batch;
+use crate::compose;
 use crate::db::Database;
 use crate::docker;
 use crate::error::{AppError, AppResult, CommandError, CommandResult};
@@ -13,7 +14,8 @@ use crate::files;
 use crate::metrics;
 use crate::models::{
     ActionResult, AlertEvent, AuthMethod, BackupPreview, BackupRestoreResult, BackupSummary,
-    BatchResult, ComposeAction, ComposeActionResult, ComposeLogs, ComposeOverview,
+    BatchResult, ComposeAction, ComposeActionResult, ComposeApplication, ComposeDeploymentHistory,
+    ComposeDeploymentPlan, ComposeDeploymentResult, ComposeEditInput, ComposeLogs, ComposeOverview,
     ConnectionReport, ConnectionTest, DockerAction, DockerActionResult, DockerLogs, DockerOverview,
     FileListing, FileTransfer, FileTransferKind, FileTransferTask, MetricSample,
     MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook,
@@ -568,9 +570,171 @@ pub async fn get_compose_logs(
             &known_hosts,
             allow_unknown_host,
         )?;
-        docker::compose_logs(&connection.session, &project)
+        let mut logs = docker::compose_logs(&connection.session, &project)?;
+        logs.output =
+            compose::redact_project_output(&connection.session, &id, &project, &logs.output)?;
+        Ok(logs)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn get_compose_application(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    project: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeApplication> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        compose::read(&connection.session, &id, &project)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn preview_compose_deployment(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    input: ComposeEditInput,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeDeploymentPlan> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        compose::preview(&connection.session, input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn deploy_compose_application(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    input: ComposeEditInput,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeDeploymentResult> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let operation_id = id.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        compose::deploy(&connection.session, &operation_id, input)
+    })
+    .await;
+    match &result {
+        Ok(output) => {
+            let _ = db.log_operation(
+                &id,
+                "Compose 应用部署",
+                output.record.status == crate::models::ComposeDeploymentStatus::Succeeded,
+                &format!(
+                    "{} · {} · {:?}",
+                    output.record.project, output.record.id, output.record.status
+                ),
+            );
+        }
+        Err(error) => {
+            let _ = db.log_operation(&id, "Compose 应用部署", false, &error.message);
+        }
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn list_compose_deployments(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    project: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeDeploymentHistory> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        compose::history(&connection.session, &project)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rollback_compose_deployment(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    project: String,
+    deployment_id: String,
+    expected_revision: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ComposeDeploymentResult> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let operation_id = id.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            job.jump_host.as_ref(),
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        compose::rollback(
+            &connection.session,
+            &operation_id,
+            &project,
+            &deployment_id,
+            &expected_revision,
+        )
+    })
+    .await;
+    match &result {
+        Ok(output) => {
+            let _ = db.log_operation(
+                &id,
+                "Compose 应用回滚",
+                output.record.status == crate::models::ComposeDeploymentStatus::Succeeded,
+                &format!(
+                    "{} · {} · {:?}",
+                    output.record.project, output.record.id, output.record.status
+                ),
+            );
+        }
+        Err(error) => {
+            let _ = db.log_operation(&id, "Compose 应用回滚", false, &error.message);
+        }
+    }
+    result
 }
 
 #[tauri::command]

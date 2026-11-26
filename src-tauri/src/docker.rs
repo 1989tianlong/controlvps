@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde_json::Value;
 use ssh2::Session;
@@ -172,6 +173,11 @@ fn compose_projects(session: &Session) -> AppResult<Vec<ComposeProject>> {
                     "Compose 项目 {name} 没有配置文件路径"
                 )));
             }
+            let working_directory = Path::new(&config_files[0])
+                .parent()
+                .ok_or_else(|| AppError::Message(format!("Compose 项目 {name} 配置路径无效")))?
+                .to_string_lossy()
+                .into_owned();
             Ok(ComposeProject {
                 name: name.to_string(),
                 status: value
@@ -180,6 +186,7 @@ fn compose_projects(session: &Session) -> AppResult<Vec<ComposeProject>> {
                     .unwrap_or("unknown")
                     .to_string(),
                 config_files,
+                working_directory,
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
@@ -187,7 +194,10 @@ fn compose_projects(session: &Session) -> AppResult<Vec<ComposeProject>> {
     Ok(projects)
 }
 
-fn find_compose_project(session: &Session, project_name: &str) -> AppResult<ComposeProject> {
+pub(crate) fn find_compose_project(
+    session: &Session,
+    project_name: &str,
+) -> AppResult<ComposeProject> {
     if project_name.is_empty()
         || project_name.len() > 128
         || !project_name

@@ -12,6 +12,11 @@ import type {
   ConnectionTest,
   ComposeAction,
   ComposeActionResult,
+  ComposeApplication,
+  ComposeDeploymentHistory,
+  ComposeDeploymentPlan,
+  ComposeDeploymentResult,
+  ComposeEditInput,
   ComposeLogs,
   ComposeOverview,
   DockerAction,
@@ -94,7 +99,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.2.0",
+        version: "1.3.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -169,6 +174,16 @@ export const api = {
     call<ComposeActionResult>("run_compose_action", { id, project, action, allowUnknownHost }),
   getComposeLogs: (id: string, project: string, allowUnknownHost = false) =>
     call<ComposeLogs>("get_compose_logs", { id, project, allowUnknownHost }),
+  getComposeApplication: (id: string, project: string, allowUnknownHost = false) =>
+    call<ComposeApplication>("get_compose_application", { id, project, allowUnknownHost }),
+  previewComposeDeployment: (id: string, input: ComposeEditInput, allowUnknownHost = false) =>
+    call<ComposeDeploymentPlan>("preview_compose_deployment", { id, input, allowUnknownHost }),
+  deployComposeApplication: (id: string, input: ComposeEditInput, allowUnknownHost = false) =>
+    call<ComposeDeploymentResult>("deploy_compose_application", { id, input, allowUnknownHost }),
+  listComposeDeployments: (id: string, project: string, allowUnknownHost = false) =>
+    call<ComposeDeploymentHistory>("list_compose_deployments", { id, project, allowUnknownHost }),
+  rollbackComposeDeployment: (id: string, project: string, deploymentId: string, expectedRevision: string, allowUnknownHost = false) =>
+    call<ComposeDeploymentResult>("rollback_compose_deployment", { id, project, deploymentId, expectedRevision, allowUnknownHost }),
   listSystemdServices: (id: string, allowUnknownHost = false) =>
     call<SystemdOverview>("list_systemd_services", { id, allowUnknownHost }),
   runSystemdAction: (id: string, unit: string, action: SystemdAction, allowUnknownHost = false) =>

@@ -416,6 +416,7 @@ export interface ComposeProject {
   name: string;
   status: string;
   configFiles: string[];
+  workingDirectory: string;
 }
 
 export interface ComposeOverview {
@@ -435,6 +436,85 @@ export interface ComposeActionResult {
 export interface ComposeLogs {
   project: string;
   output: string;
+}
+
+export interface ComposeEnvironmentEntry {
+  key: string;
+  managed: boolean;
+}
+
+export interface ComposeEnvironmentChange {
+  key: string;
+  value?: string | null;
+}
+
+export interface ComposeEditInput {
+  projectName: string;
+  workingDirectory: string;
+  configFiles: string[];
+  content: string;
+  environmentChanges: ComposeEnvironmentChange[];
+  expectedRevision: string;
+}
+
+export interface ComposeApplication {
+  project: ComposeProject;
+  content: string;
+  environment: ComposeEnvironmentEntry[];
+  revision: string;
+}
+
+export type ComposeServiceChangeKind = "create" | "update" | "remove" | "unchanged";
+
+export interface ComposeServiceChange {
+  service: string;
+  change: ComposeServiceChangeKind;
+  currentImage?: string;
+  desiredImage?: string;
+  currentImageId?: string;
+}
+
+export interface ComposeDeploymentPlan {
+  project: string;
+  revision: string;
+  services: ComposeServiceChange[];
+  createCount: number;
+  updateCount: number;
+  removeCount: number;
+  unchangedCount: number;
+}
+
+export interface ComposeImageSnapshot {
+  service: string;
+  image: string;
+  imageId?: string;
+}
+
+export interface ComposeDeploymentRecord {
+  id: string;
+  project: string;
+  action: "deploy" | "rollback";
+  status: "succeeded" | "failed";
+  createdAt: string;
+  operator: string;
+  snapshotAvailable: boolean;
+  snapshotImageCount: number;
+  revisionBefore?: string;
+  revisionAfter?: string;
+  changes: ComposeServiceChange[];
+  images: ComposeImageSnapshot[];
+  output: string;
+}
+
+export interface ComposeDeploymentResult {
+  record: ComposeDeploymentRecord;
+  plan: ComposeDeploymentPlan;
+}
+
+export interface ComposeDeploymentHistory {
+  project: string;
+  currentRevision: string;
+  records: ComposeDeploymentRecord[];
 }
 
 export interface SystemdService {

@@ -645,6 +645,7 @@ pub struct ComposeProject {
     pub name: String,
     pub status: String,
     pub config_files: Vec<String>,
+    pub working_directory: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -677,6 +678,119 @@ pub struct ComposeActionResult {
 pub struct ComposeLogs {
     pub project: String,
     pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeEnvironmentEntry {
+    pub key: String,
+    pub managed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeEnvironmentChange {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeEditInput {
+    pub project_name: String,
+    pub working_directory: String,
+    #[serde(default)]
+    pub config_files: Vec<String>,
+    pub content: String,
+    #[serde(default)]
+    pub environment_changes: Vec<ComposeEnvironmentChange>,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeApplication {
+    pub project: ComposeProject,
+    pub content: String,
+    pub environment: Vec<ComposeEnvironmentEntry>,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeServiceChange {
+    pub service: String,
+    pub change: String,
+    pub current_image: Option<String>,
+    pub desired_image: Option<String>,
+    pub current_image_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeDeploymentPlan {
+    pub project: String,
+    pub revision: String,
+    pub services: Vec<ComposeServiceChange>,
+    pub create_count: usize,
+    pub update_count: usize,
+    pub remove_count: usize,
+    pub unchanged_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeImageSnapshot {
+    pub service: String,
+    pub image: String,
+    pub image_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeDeploymentAction {
+    Deploy,
+    Rollback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeDeploymentStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeDeploymentRecord {
+    pub id: String,
+    pub project: String,
+    pub action: ComposeDeploymentAction,
+    pub status: ComposeDeploymentStatus,
+    pub created_at: String,
+    pub operator: String,
+    pub snapshot_available: bool,
+    pub snapshot_image_count: usize,
+    pub revision_before: Option<String>,
+    pub revision_after: Option<String>,
+    pub changes: Vec<ComposeServiceChange>,
+    pub images: Vec<ComposeImageSnapshot>,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeDeploymentResult {
+    pub record: ComposeDeploymentRecord,
+    pub plan: ComposeDeploymentPlan,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeDeploymentHistory {
+    pub project: String,
+    pub current_revision: String,
+    pub records: Vec<ComposeDeploymentRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -746,6 +860,8 @@ pub struct WorkspaceBackup {
     pub service_webhook_url: Option<String>,
     pub includes_credentials: bool,
     pub credentials: HashMap<String, BackupCredentials>,
+    #[serde(default)]
+    pub compose_environments: HashMap<String, HashMap<String, HashMap<String, String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

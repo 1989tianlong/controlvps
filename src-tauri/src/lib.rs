@@ -2,6 +2,7 @@ mod alerts;
 mod backup;
 mod batch;
 mod commands;
+mod compose;
 mod db;
 mod docker;
 mod error;
@@ -84,6 +85,11 @@ pub fn run() {
             commands::list_compose_projects,
             commands::run_compose_action,
             commands::get_compose_logs,
+            commands::get_compose_application,
+            commands::preview_compose_deployment,
+            commands::deploy_compose_application,
+            commands::list_compose_deployments,
+            commands::rollback_compose_deployment,
             commands::list_systemd_services,
             commands::run_systemd_action,
             commands::get_systemd_logs,

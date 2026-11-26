@@ -48,6 +48,12 @@ pub fn create(
     if include_credentials {
         backup.service_webhook_url = crate::service_monitor::webhook_url()?;
         for server in &backup.servers {
+            let compose_environments = crate::compose::export_managed_environments(&server.id)?;
+            if !compose_environments.is_empty() {
+                backup
+                    .compose_environments
+                    .insert(server.id.clone(), compose_environments);
+            }
             let credentials = ssh::load_credentials(server)?;
             if credentials.password.is_some() || credentials.key_passphrase.is_some() {
                 backup.credentials.insert(
@@ -317,6 +323,9 @@ impl RestoreContext<'_> {
         if let Err(error) = ssh::save_credentials(&imported, &input) {
             let _ = self.db.delete_server(&imported.id);
             return Err(error);
+        }
+        if let Some(environments) = self.backup.compose_environments.get(old_id) {
+            crate::compose::import_managed_environments(&imported.id, environments)?;
         }
         self.importing.remove(old_id);
         self.imported += 1;
