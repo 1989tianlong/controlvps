@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "controlvps"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -683,6 +683,7 @@ dependencies = [
  "keyring",
  "native-tls",
  "rand_core 0.6.4",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

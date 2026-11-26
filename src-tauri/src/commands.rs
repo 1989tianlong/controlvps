@@ -8,6 +8,7 @@ use crate::alerts::{self, AlertRegistry};
 use crate::batch;
 use crate::compose;
 use crate::db::Database;
+use crate::discovery::{self, DealFeed};
 use crate::docker;
 use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
@@ -61,6 +62,11 @@ pub fn get_app_info(paths: State<'_, AppPaths>) -> AppInfo {
         known_hosts_path: paths.known_hosts.display().to_string(),
         credential_store: "macOS Keychain".into(),
     }
+}
+
+#[tauri::command]
+pub async fn fetch_vps_deals() -> CommandResult<DealFeed> {
+    run_blocking(discovery::fetch_deals).await
 }
 
 #[tauri::command]

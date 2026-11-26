@@ -6,6 +6,7 @@ mod commands;
 mod compose;
 mod data_protection;
 mod db;
+mod discovery;
 mod docker;
 mod error;
 mod files;
@@ -66,6 +67,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::fetch_vps_deals,
             commands::create_encrypted_backup,
             commands::preview_encrypted_backup,
             commands::restore_encrypted_backup,

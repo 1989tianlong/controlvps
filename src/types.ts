@@ -895,6 +895,48 @@ export interface CatalogOffer {
   updatedAt: string;
 }
 
+export type DealPeriod = "month" | "quarter" | "year" | "multi_year" | "custom";
+
+export interface DealPrice {
+  amount: number;
+  currency: "USD" | "EUR";
+  period: DealPeriod;
+  billingMonths: number;
+  monthlyEquivalent: number;
+}
+
+export interface VpsDeal {
+  id: string;
+  source: string;
+  sourceName: string;
+  title: string;
+  url: string;
+  publishedAt: string;
+  provider: string | null;
+  summary: string;
+  price: DealPrice | null;
+  memoryGb: number | null;
+  diskGb: number | null;
+  cpuCores: number | null;
+  bandwidthTb: number | null;
+  locations: string[];
+}
+
+export interface DealSource {
+  id: string;
+  name: string;
+  url: string;
+  ok: boolean;
+  message: string | null;
+  itemCount: number;
+}
+
+export interface DealFeed {
+  fetchedAt: string;
+  sources: DealSource[];
+  deals: VpsDeal[];
+}
+
 export type FreeKind = "always_free" | "credit" | "trial" | "education";
 
 export interface FreeProgram {

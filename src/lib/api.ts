@@ -22,6 +22,7 @@ import type {
   DataProtectionPolicy,
   DataProtectionRestoreResult,
   DataProtectionRun,
+  DealFeed,
   ResticSnapshot,
   ComposeAction,
   ComposeActionResult,
@@ -140,6 +141,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 export const api = {
   appInfo: () => call<AppInfo>("get_app_info"),
+  fetchVpsDeals: () => call<DealFeed>("fetch_vps_deals"),
   createEncryptedBackup: (path: string, password: string, includeCredentials: boolean) =>
     call<BackupSummary>("create_encrypted_backup", { path, password, includeCredentials }),
   previewEncryptedBackup: (path: string, password: string) =>
