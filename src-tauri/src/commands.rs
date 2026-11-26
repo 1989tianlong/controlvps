@@ -13,6 +13,7 @@ use crate::docker;
 use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
+use crate::recording::{RecordingDetail, RecordingSummary};
 use crate::models::{
     ActionResult, AlertEvent, AuthMethod, AuthProfile, AuthProfileInput, BackupPreview,
     BackupRestoreResult, BackupSummary, BatchResult, CloudAccount, CloudAccountInput,
@@ -1582,6 +1583,71 @@ pub fn terminal_close(
     registry
         .send(&terminal_id, TerminalCommand::Close)
         .map_err(Into::into)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingHandle {
+    pub id: String,
+    pub started_at: String,
+}
+
+#[tauri::command]
+pub fn start_terminal_recording(
+    paths: State<'_, AppPaths>,
+    registry: State<'_, TerminalRegistry>,
+    terminal_id: String,
+) -> CommandResult<RecordingHandle> {
+    let info = registry.session(&terminal_id).map_err(CommandError::from)?;
+    let (recorder, id, started_at) = crate::recording::Recorder::create(
+        &paths.data_dir,
+        &info.server_id,
+        &info.server_name,
+        100,
+        32,
+    )
+            .map_err(CommandError::from)?;
+    if let Err(error) = registry.send(
+        &terminal_id,
+        TerminalCommand::Record(Some(Box::new(recorder))),
+    ) {
+        let _ = crate::recording::delete(&paths.data_dir, &id);
+        return Err(CommandError::from(error));
+    }
+    Ok(RecordingHandle { id, started_at })
+}
+
+#[tauri::command]
+pub fn stop_terminal_recording(
+    registry: State<'_, TerminalRegistry>,
+    terminal_id: String,
+) -> CommandResult<()> {
+    registry
+        .send(&terminal_id, TerminalCommand::Record(None))
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_terminal_recordings(
+    paths: State<'_, AppPaths>,
+) -> CommandResult<Vec<RecordingSummary>> {
+    crate::recording::list(&paths.data_dir).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn read_terminal_recording(
+    paths: State<'_, AppPaths>,
+    id: String,
+) -> CommandResult<RecordingDetail> {
+    crate::recording::read(&paths.data_dir, &id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_terminal_recording(
+    paths: State<'_, AppPaths>,
+    id: String,
+) -> CommandResult<()> {
+    crate::recording::delete(&paths.data_dir, &id).map_err(Into::into)
 }
 
 #[tauri::command]

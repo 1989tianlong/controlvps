@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import { Activity, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, MonitorPlay, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
@@ -20,6 +20,7 @@ import { TunnelsPage } from "./components/TunnelsPage";
 import { MonitoringPage } from "./components/MonitoringPage";
 import { SecurityCenter } from "./components/SecurityCenter";
 import { TerminalWorkspace, type TerminalRequest } from "./components/TerminalWorkspace";
+import { RecordingsPage } from "./components/RecordingsPage";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useAppUpdate } from "./hooks/useAppUpdate";
 
@@ -29,6 +30,7 @@ const pages = [
   { id: "monitoring", label: "监控告警", icon: Activity },
   { id: "security", label: "补丁与安全", icon: ShieldCheck },
   { id: "terminal", label: "终端工作区", icon: TerminalSquare },
+  { id: "recordings", label: "录制回放", icon: MonitorPlay },
   { id: "automation", label: "批量运维", icon: ListChecks },
   { id: "tunnels", label: "隧道中心", icon: Network },
   { id: "assets", label: "云资产", icon: Cloud },
@@ -138,6 +140,7 @@ export default function App() {
         {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} requestedMode={automationMode} />}
         {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
         <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>
+        {page === "recordings" && <RecordingsPage />}
         {page === "assets" && <AssetsPage servers={servers} onChanged={loadServers} />}
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}

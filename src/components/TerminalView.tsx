@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
-import { RotateCcw, Trash2 } from "lucide-react";
+import { CircleDot, RotateCcw, Trash2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import type { Server, TerminalSession, TrustedExecutor } from "../types";
 import "@xterm/xterm/css/xterm.css";
@@ -19,6 +19,7 @@ export function TerminalView({ server, trusted }: Props) {
   const [status, setStatus] = useState("正在建立 SSH 会话");
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [recordingId, setRecordingId] = useState("");
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -26,8 +27,10 @@ export function TerminalView({ server, trusted }: Props) {
     let session: TerminalSession | null = null;
     let unlistenOutput: (() => void) | undefined;
     let unlistenExit: (() => void) | undefined;
+    let unlistenRecording: (() => void) | undefined;
     setError("");
     setStatus("正在建立 SSH 会话");
+    setRecordingId("");
     const css = getComputedStyle(document.documentElement);
     const token = (name: string) => css.getPropertyValue(name).trim();
     const terminal = new Terminal({
@@ -81,6 +84,10 @@ export function TerminalView({ server, trusted }: Props) {
           setStatus(event.payload);
           terminal.writeln(`\r\n\x1b[2m${event.payload}\x1b[0m`);
         });
+        unlistenRecording = await listen<string>(`terminal-recording-stopped-${opened.terminalId}`, (event) => {
+          setRecordingId("");
+          setError(event.payload);
+        });
         terminal.focus();
       })
       .catch((reason) => {
@@ -97,12 +104,34 @@ export function TerminalView({ server, trusted }: Props) {
       observer.disconnect();
       unlistenOutput?.();
       unlistenExit?.();
+      unlistenRecording?.();
       if (session) void api.terminalClose(session.terminalId).catch(() => undefined);
       sessionRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
     };
   }, [server, trusted, attempt]);
+
+  const toggleRecording = async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    if (recordingId) {
+      try {
+        await api.stopTerminalRecording(session.terminalId);
+        setRecordingId("");
+      } catch (reason) {
+        setError(errorMessage(reason));
+      }
+      return;
+    }
+    if (!window.confirm("录制会保存这台服务器的终端输出和键盘输入，可能包含密码等敏感内容，文件只保存在本机。开始录制？")) return;
+    try {
+      const handle = await api.startTerminalRecording(session.terminalId);
+      setRecordingId(handle.id);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
 
   const guardPaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const text = event.clipboardData.getData("text");
@@ -121,6 +150,8 @@ export function TerminalView({ server, trusted }: Props) {
       <div className="panel-header">
         <div><span className="table-name">{server.username}@{server.host}</span><span className="table-meta">{status}</span></div>
         <div className="row-actions">
+          {recordingId && <span className="badge badge-bad record-badge"><CircleDot size={13} />录制中</span>}
+          <button className="icon-btn" type="button" title={recordingId ? "停止录制会话" : "录制会话"} aria-label={recordingId ? "停止录制会话" : "录制会话"} aria-pressed={Boolean(recordingId)} onClick={() => void toggleRecording()}><CircleDot size={16} /></button>
           <button className="icon-btn" type="button" title="清空终端" aria-label="清空终端" onClick={() => terminalRef.current?.clear()}><Trash2 size={16} /></button>
           <button className="icon-btn" type="button" title="重新连接" aria-label="重新连接" onClick={() => setAttempt((value) => value + 1)}><RotateCcw size={16} /></button>
         </div>

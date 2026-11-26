@@ -956,3 +956,31 @@ export interface FreeProgram {
   status: "verified" | "unverified";
   conditions: string[];
 }
+
+export interface RecordingHandle {
+  id: string;
+  startedAt: string;
+}
+
+export interface RecordingSummary {
+  id: string;
+  serverId: string;
+  serverName: string;
+  startedAt: string;
+  durationSeconds: number;
+  sizeBytes: number;
+  frames: number;
+  width: number;
+  height: number;
+}
+
+export interface RecordingFrame {
+  time: number;
+  kind: "o" | "i" | "r" | string;
+  data: string;
+}
+
+export interface RecordingDetail {
+  summary: RecordingSummary;
+  frames: RecordingFrame[];
+}

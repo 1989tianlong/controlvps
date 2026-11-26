@@ -23,6 +23,9 @@ import type {
   DataProtectionRestoreResult,
   DataProtectionRun,
   DealFeed,
+  RecordingDetail,
+  RecordingHandle,
+  RecordingSummary,
   ResticSnapshot,
   ComposeAction,
   ComposeActionResult,
@@ -285,6 +288,13 @@ export const api = {
   terminalResize: (terminalId: string, columns: number, rows: number) =>
     call<void>("terminal_resize", { terminalId, columns, rows }),
   terminalClose: (terminalId: string) => call<void>("terminal_close", { terminalId }),
+  startTerminalRecording: (terminalId: string) =>
+    call<RecordingHandle>("start_terminal_recording", { terminalId }),
+  stopTerminalRecording: (terminalId: string) =>
+    call<void>("stop_terminal_recording", { terminalId }),
+  listTerminalRecordings: () => call<RecordingSummary[]>("list_terminal_recordings"),
+  readTerminalRecording: (id: string) => call<RecordingDetail>("read_terminal_recording", { id }),
+  deleteTerminalRecording: (id: string) => call<void>("delete_terminal_recording", { id }),
   listRemoteFiles: (id: string, path?: string, allowUnknownHost = false) =>
     call<FileListing>("list_remote_files", { id, path, allowUnknownHost }),
   createRemoteDirectory: (id: string, parent: string, name: string, allowUnknownHost = false) =>

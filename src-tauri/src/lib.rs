@@ -12,6 +12,7 @@ mod error;
 mod files;
 mod metrics;
 mod models;
+mod recording;
 mod runbook;
 mod scheduler;
 mod security;
@@ -167,6 +168,11 @@ pub fn run() {
             commands::terminal_input,
             commands::terminal_resize,
             commands::terminal_close,
+            commands::start_terminal_recording,
+            commands::stop_terminal_recording,
+            commands::list_terminal_recordings,
+            commands::read_terminal_recording,
+            commands::delete_terminal_recording,
             commands::list_remote_files,
             commands::create_remote_directory,
             commands::rename_remote_file,
