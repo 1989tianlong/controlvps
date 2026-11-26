@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage } from "../lib/api";
 import type { ConnectionReport, Server, ServerMetrics, TrustedExecutor } from "../types";
 import { ServerDetail, type DetailTab } from "./ServerDetail";
+import { jumpChainOf, jumpServersOf } from "../lib/route";
 
 interface Props {
   servers: Server[];
@@ -115,7 +116,7 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
             <td>{server.groupName || "未分组"}</td>
             <td><span className={reading ? "badge badge-ok" : error ? "badge badge-bad" : "badge"}>{reading ? "在线" : error ? "连接失败" : "未检查"}</span>{error && <span className="table-meta" title={error}>查看详情</span>}</td>
             <td className="measured">{reading ? `${reading.cpuUsage.toFixed(1)}% / ${reading.memoryTotal ? (reading.memoryUsed / reading.memoryTotal * 100).toFixed(1) : 0}%` : "无读数"}</td>
-            <td>{{ key: "私钥", password: "密码", agent: "Agent" }[server.authMethod]}{server.jumpServerId && <span className="table-meta">经跳板机</span>}</td>
+            <td>{{ key: "私钥", password: "密码", agent: "Agent" }[server.authMethod]}{jumpChainOf(server).length > 0 && <span className="table-meta">经 {jumpChainOf(server).length} 级跳板</span>}</td>
             <td><div className="row-actions">
               <button className="icon-btn" type="button" title="测试连接" aria-label={`测试 ${server.name}`} disabled={busy === server.id} onClick={() => test(server)}><Cable size={16} /></button>
               <button className="icon-btn" type="button" title="刷新指标" aria-label={`刷新 ${server.name} 指标`} disabled={busy === server.id} onClick={() => refresh(server)}><RefreshCw size={16} /></button>
@@ -130,6 +131,6 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
         })}
       </tbody></table>
     </div>}
-    {selected && <ServerDetail server={selected} jumpServer={servers.find((server) => server.id === selected.jumpServerId)} diagnostics={diagnostics[selected.id]} onDiagnose={() => void test(selected)} metrics={metrics[selected.id]} metricsError={errors[selected.id]} tab={tab} onTabChange={setTab} onRefresh={() => refresh(selected)} refreshing={busy === selected.id} trusted={trusted} />}
+    {selected && <ServerDetail server={selected} jumpServers={jumpServersOf(selected, servers)} diagnostics={diagnostics[selected.id]} onDiagnose={() => void test(selected)} metrics={metrics[selected.id]} metricsError={errors[selected.id]} tab={tab} onTabChange={setTab} onRefresh={() => refresh(selected)} refreshing={busy === selected.id} trusted={trusted} />}
   </>;
 }

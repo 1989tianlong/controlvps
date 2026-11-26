@@ -407,6 +407,7 @@ pub fn import_ssh_config(db: State<'_, Database>, path: String) -> CommandResult
             currency: None,
             expires_at: None,
             jump_server_id: None,
+            jump_chain: Vec::new(),
             auth_profile_id: None,
             cloud_account_id: None,
             cloud_resource_id: None,
@@ -479,7 +480,7 @@ pub async fn test_connection(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -501,7 +502,7 @@ pub async fn diagnose_connection(
         ssh::diagnose(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )
@@ -525,7 +526,7 @@ pub async fn collect_metrics(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -682,7 +683,7 @@ pub async fn list_docker_containers(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -706,7 +707,7 @@ pub async fn run_docker_action(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -733,7 +734,7 @@ pub async fn get_docker_logs(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -755,7 +756,7 @@ pub async fn list_compose_projects(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -779,7 +780,7 @@ pub async fn run_compose_action(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -809,7 +810,7 @@ pub async fn get_compose_logs(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -835,7 +836,7 @@ pub async fn get_compose_application(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -858,7 +859,7 @@ pub async fn preview_compose_deployment(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -882,7 +883,7 @@ pub async fn deploy_compose_application(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -922,7 +923,7 @@ pub async fn list_compose_deployments(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -948,7 +949,7 @@ pub async fn rollback_compose_deployment(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -993,7 +994,7 @@ pub async fn list_systemd_services(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1017,7 +1018,7 @@ pub async fn run_systemd_action(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1047,7 +1048,7 @@ pub async fn get_systemd_logs(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1069,7 +1070,7 @@ pub async fn collect_security_report(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1105,7 +1106,7 @@ pub async fn run_quick_action(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1182,7 +1183,7 @@ pub async fn start_port_forward(
             &rule,
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )
@@ -1542,7 +1543,7 @@ pub async fn open_terminal(
             &registry,
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )
@@ -1597,7 +1598,7 @@ pub async fn list_remote_files(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1621,7 +1622,7 @@ pub async fn create_remote_directory(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1649,7 +1650,7 @@ pub async fn rename_remote_file(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1678,7 +1679,7 @@ pub async fn delete_remote_file(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1707,7 +1708,7 @@ pub async fn upload_remote_file(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;
@@ -1740,7 +1741,7 @@ pub async fn download_remote_file(
         let connection = ssh::connect(
             &job.server,
             &job.credentials,
-            job.jump_host.as_ref(),
+            &job.jumps,
             &known_hosts,
             allow_unknown_host,
         )?;

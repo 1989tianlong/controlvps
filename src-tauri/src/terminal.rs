@@ -57,14 +57,14 @@ pub fn open(
     registry: &TerminalRegistry,
     server: &Server,
     credentials: &Credentials,
-    jump_host: Option<&JumpHost>,
+    jumps: &[JumpHost],
     known_hosts_path: &Path,
     allow_unknown_host: bool,
 ) -> AppResult<TerminalSession> {
     let connection = connect(
         server,
         credentials,
-        jump_host,
+        jumps,
         known_hosts_path,
         allow_unknown_host,
     )?;

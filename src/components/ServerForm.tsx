@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import type { AuthMethod, AuthProfile, Server, ServerGroup, ServerInput } from "../types";
 
@@ -12,6 +12,7 @@ const emptyForm: ServerInput = {
   privateKeyPath: "~/.ssh/id_ed25519",
   tags: [],
   currency: "USD",
+  jumpChain: [],
   inheritPort: false,
   inheritUsername: false,
   inheritJump: false,
@@ -33,6 +34,7 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
   const [profiles, setProfiles] = useState<AuthProfile[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [pendingHop, setPendingHop] = useState("");
   const selectedGroup = groups.find((group) => group.name === form.groupName);
   const inheritedProfile = profiles.find((profile) => profile.id === (form.inheritAuth ? selectedGroup?.authProfileId : form.authProfileId));
 
@@ -55,6 +57,7 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
       currency: server.currency ?? "USD",
       expiresAt: server.expiresAt ?? "",
       jumpServerId: server.jumpServerId ?? "",
+      jumpChain: server.jumpChain?.length ? server.jumpChain : server.jumpServerId ? [server.jumpServerId] : [],
       authProfileId: server.authProfileId ?? "",
       inheritPort: server.inheritPort,
       inheritUsername: server.inheritUsername,
@@ -74,6 +77,24 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
+  const addHop = () => {
+    if (!pendingHop || form.jumpChain.includes(pendingHop) || form.jumpChain.length >= 4) return;
+    update("jumpChain", [...form.jumpChain, pendingHop]);
+    setPendingHop("");
+  };
+
+  const removeHop = (index: number) => {
+    update("jumpChain", form.jumpChain.filter((_, position) => position !== index));
+  };
+
+  const moveHop = (index: number, offset: number) => {
+    const target = index + offset;
+    if (target < 0 || target >= form.jumpChain.length) return;
+    const next = [...form.jumpChain];
+    [next[index], next[target]] = [next[target], next[index]];
+    update("jumpChain", next);
+  };
+
   const close = () => {
     if (!busy) {
       dialogRef.current?.close();
@@ -90,7 +111,8 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
         ...form,
         port: form.inheritPort ? 22 : form.port,
         username: form.inheritUsername ? "root" : form.username,
-        jumpServerId: form.inheritJump ? undefined : form.jumpServerId,
+        jumpServerId: form.inheritJump ? undefined : form.jumpChain[0],
+        jumpChain: form.inheritJump ? [] : form.jumpChain,
         authMethod: form.inheritAuth ? "key" : form.authMethod,
         privateKeyPath: form.inheritAuth ? "~/.ssh/id_ed25519" : form.privateKeyPath,
         authProfileId: form.inheritAuth ? undefined : form.authProfileId,
@@ -153,13 +175,30 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
           <section className="form-section">
             <h2>连接路由</h2>
             <div className="field">
-              <label htmlFor="jump-server">跳板机</label>
-              <select className="select w-full" id="jump-server" name="jumpServerId" disabled={form.inheritJump} value={form.inheritJump ? selectedGroup?.jumpServerId ?? "" : form.jumpServerId ?? ""} onChange={(e) => update("jumpServerId", e.target.value || undefined)}>
-                <option value="">直接连接</option>
-                {servers.filter((item) => item.id !== server?.id && !item.jumpServerId).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.host}:{item.port}</option>)}
-              </select>
-              {selectedGroup && <label className="check-row"><input type="checkbox" checked={Boolean(form.inheritJump)} onChange={(e) => update("inheritJump", e.target.checked)} />沿用分组跳板机{selectedGroup.jumpServerId ? "" : "（分组当前为直接连接）"}</label>}
-              <p className="field-help">先通过本机连接跳板机，再由跳板机访问目标 SSH 端口。当前支持一级跳板，两台服务器分别校验主机密钥并使用各自凭据。</p>
+              <span className="field-label">跳板链</span>
+              <ol className="jump-chain" aria-label="跳板链">
+                {form.jumpChain.length === 0 ? <li className="jump-empty">直接连接，不经过跳板</li> : form.jumpChain.map((hopId, index) => {
+                  const hop = servers.find((item) => item.id === hopId);
+                  return <li key={`${hopId}-${index}`}>
+                    <span className="jump-index" aria-hidden="true">{index + 1}</span>
+                    <span className="jump-name">{hop ? <>{hop.name}<small>{hop.username}@{hop.host}:{hop.port}</small></> : "跳板机已删除"}</span>
+                    <span className="jump-actions">
+                      <button className="icon-btn" type="button" aria-label={`上移第 ${index + 1} 跳`} disabled={form.inheritJump || index === 0} onClick={() => moveHop(index, -1)}><ArrowUp size={15} /></button>
+                      <button className="icon-btn" type="button" aria-label={`下移第 ${index + 1} 跳`} disabled={form.inheritJump || index === form.jumpChain.length - 1} onClick={() => moveHop(index, 1)}><ArrowDown size={15} /></button>
+                      <button className="icon-btn" type="button" aria-label={`移除第 ${index + 1} 跳`} disabled={form.inheritJump} onClick={() => removeHop(index)}><X size={15} /></button>
+                    </span>
+                  </li>;
+                })}
+              </ol>
+              <div className="jump-add">
+                <select className="select" aria-label="选择要追加的跳板机" disabled={form.inheritJump || form.jumpChain.length >= 4} value={pendingHop} onChange={(e) => setPendingHop(e.target.value)}>
+                  <option value="">选择要追加的跳板机</option>
+                  {servers.filter((item) => item.id !== server?.id && !form.jumpChain.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.host}:{item.port}</option>)}
+                </select>
+                <button className="btn" type="button" disabled={form.inheritJump || !pendingHop || form.jumpChain.length >= 4} onClick={addHop}><Plus size={15} />追加一跳</button>
+              </div>
+              {selectedGroup && <label className="check-row"><input type="checkbox" checked={Boolean(form.inheritJump)} onChange={(e) => update("inheritJump", e.target.checked)} />沿用分组默认跳板机{selectedGroup.jumpServerId ? "" : "（分组当前为直接连接）"}</label>}
+              <p className="field-help">按顺序逐跳连接：本机先连第 1 跳，再由它连第 2 跳，最后到达目标 SSH 端口，最多 4 跳。每台服务器分别校验主机密钥并使用各自凭据；能作为跳板的前提是上一跳所在网络可以访问它的地址。</p>
             </div>
           </section>
           <section className="form-section">

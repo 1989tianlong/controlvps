@@ -199,21 +199,18 @@ pub fn connection_job(db: &Database, id: &str) -> AppResult<ConnectionJob> {
     let mut server = db.get_server(id)?;
     let mut credentials = ssh::load_credentials(&server)?;
     apply_group_defaults(db, &mut server, &mut credentials)?;
-    let jump_id = inherited_jump_id(db, &server)?;
-    let jump_host = match jump_id {
-        Some(jump_id) => {
-            let jump_server = db.get_server(&jump_id)?;
-            Some(ssh::JumpHost {
-                credentials: ssh::load_credentials(&jump_server)?,
-                server: jump_server,
-            })
-        }
-        None => None,
-    };
+    let mut jumps = Vec::new();
+    for jump_id in effective_jump_ids(db, &server)? {
+        let jump_server = db.get_server(&jump_id)?;
+        jumps.push(ssh::JumpHost {
+            credentials: ssh::load_credentials(&jump_server)?,
+            server: jump_server,
+        });
+    }
     Ok(ConnectionJob {
         server,
         credentials,
-        jump_host,
+        jumps,
     })
 }
 
@@ -256,21 +253,63 @@ fn apply_group_defaults(
     Ok(())
 }
 
-fn inherited_jump_id(db: &Database, server: &crate::models::Server) -> AppResult<Option<String>> {
-    if !server.inherit_jump {
-        return Ok(server.jump_server_id.clone());
+fn effective_jump_ids(db: &Database, server: &crate::models::Server) -> AppResult<Vec<String>> {
+    let mut ids = explicit_jump_ids(server);
+    if ids.is_empty() && server.inherit_jump {
+        if let Some(group_name) = server.group_name.as_deref() {
+            if let Ok(group) = db.get_server_group_by_name(group_name) {
+                if let Some(jump_id) = group
+                    .jump_server_id
+                    .filter(|jump_id| jump_id != &server.id)
+                {
+                    ids = inherited_route(db, &jump_id, 0)?;
+                }
+            }
+        }
     }
-    if let Some(jump_id) = server.jump_server_id.clone() {
-        return Ok(Some(jump_id));
+    if ids.len() > 4 {
+        return Err(AppError::Message("跳板链最多支持 4 跳".into()));
     }
-    let Some(group_name) = server.group_name.as_deref() else {
-        return Ok(None);
+    Ok(ids)
+}
+
+fn explicit_jump_ids(server: &crate::models::Server) -> Vec<String> {
+    let ids: Vec<String> = if server.jump_chain.is_empty() {
+        server.jump_server_id.iter().cloned().collect()
+    } else {
+        server.jump_chain.clone()
     };
-    Ok(db
-        .get_server_group_by_name(group_name)
-        .ok()
-        .and_then(|group| group.jump_server_id)
-        .filter(|jump_id| jump_id != &server.id))
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter()
+        .filter(|jump_id| !jump_id.trim().is_empty() && jump_id != &server.id)
+        .filter(|jump_id| seen.insert(jump_id.clone()))
+        .collect()
+}
+
+fn inherited_route(db: &Database, jump_id: &str, depth: usize) -> AppResult<Vec<String>> {
+    if depth > 4 {
+        return Err(AppError::Message("分组跳板的上级跳板层级过深".into()));
+    }
+    let jump_server = db.get_server(jump_id)?;
+    let upstream = explicit_jump_ids(&jump_server);
+    let mut ids = if jump_server.inherit_jump && upstream.is_empty() {
+        match jump_server.group_name.as_deref() {
+            Some(group_name) => match db.get_server_group_by_name(group_name) {
+                Ok(group) => match group.jump_server_id {
+                    Some(next) => inherited_route(db, &next, depth + 1)?,
+                    None => Vec::new(),
+                },
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
+        }
+    } else {
+        upstream
+    };
+    if !ids.iter().any(|existing| existing == jump_id) {
+        ids.push(jump_id.to_string());
+    }
+    Ok(ids)
 }
 
 fn validate_request(request: &RunbookExecutionRequest) -> AppResult<()> {
@@ -432,7 +471,7 @@ fn execute_job(
     let connection = match ssh::connect(
         &job.server,
         &job.credentials,
-        job.jump_host.as_ref(),
+        &job.jumps,
         known_hosts,
         false,
     ) {

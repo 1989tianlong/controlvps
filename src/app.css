@@ -354,6 +354,15 @@
   .provider-mark { display: grid; place-items: center; flex-shrink: 0; width: 2rem; height: 2rem; border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-pill); color: var(--color-ink-2); font-size: var(--text-sm); }
   .compare-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-top: var(--space-lg); padding: var(--space-md) var(--space-lg); background: var(--color-cool-soft); border-radius: var(--radius-pill); }
   .discover-tabs { margin-bottom: var(--space-lg); }
+  .jump-chain { display: grid; gap: var(--space-2xs); margin: 0; padding: 0; list-style: none; }
+  .jump-chain li { display: flex; align-items: center; gap: var(--space-sm); min-height: var(--control-height); padding: var(--space-2xs) var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-3); }
+  .jump-chain .jump-empty { color: var(--color-muted); font-size: var(--text-sm); justify-content: center; border-style: dashed; }
+  .jump-index { display: grid; place-items: center; flex-shrink: 0; width: 1.5rem; height: 1.5rem; border-radius: var(--radius-pill); background: var(--color-cool-soft); color: var(--color-cool); font-family: var(--font-outlier); font-size: var(--text-sm); }
+  .jump-name { flex: 1; min-width: 0; color: var(--color-ink); overflow-wrap: anywhere; }
+  .jump-name small { display: block; margin-top: var(--space-2xs); color: var(--color-muted); font-size: var(--text-sm); }
+  .jump-actions { display: flex; align-items: center; gap: var(--space-2xs); }
+  .jump-add { display: flex; align-items: center; gap: var(--space-sm); margin-top: var(--space-sm); }
+  .jump-add .select { flex: 1; min-width: 0; }
   .cost-panel { margin-bottom: var(--space-xl); }
   .cost-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .cost-totals { display: flex; flex-wrap: wrap; gap: var(--space-xl); padding: var(--space-lg); border-right: var(--rule-hair) solid var(--color-rule); }

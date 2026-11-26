@@ -13,7 +13,7 @@ export type DetailTab = "overview" | "diagnostics" | "files" | "docker" | "servi
 
 interface Props {
   server: Server;
-  jumpServer?: Server;
+  jumpServers?: Server[];
   diagnostics?: ConnectionReport;
   onDiagnose: () => void;
   metrics?: ServerMetrics;
@@ -25,11 +25,11 @@ interface Props {
   trusted: TrustedExecutor;
 }
 
-export function ServerDetail({ server, jumpServer, diagnostics, onDiagnose, metrics, metricsError, tab, onTabChange, onRefresh, refreshing, trusted }: Props) {
+export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, metrics, metricsError, tab, onTabChange, onRefresh, refreshing, trusted }: Props) {
   return (
     <section className="panel server-detail" aria-label={`${server.name} 详情`}>
       <div className="panel-header">
-        <div><h2>{server.name}</h2><span className="table-meta">{server.username}@{server.host}:{server.port}{jumpServer ? ` · 经 ${jumpServer.name} 跳板` : " · 直接连接"}</span></div>
+        <div><h2>{server.name}</h2><span className="table-meta">{server.username}@{server.host}:{server.port}{jumpServers && jumpServers.length > 0 ? ` · 经 ${jumpServers.map((hop) => hop.name).join(" → ")}` : " · 直接连接"}</span></div>
         <button className="btn" type="button" onClick={onRefresh} disabled={refreshing} aria-busy={refreshing}><RefreshCw size={15} />{refreshing ? "正在采集" : "刷新指标"}</button>
       </div>
       <div className="tabs" role="tablist" aria-label="服务器工作区">

@@ -34,7 +34,7 @@ impl TunnelRegistry {
         rule: &PortForwardRule,
         server: &Server,
         credentials: &Credentials,
-        jump_host: Option<&JumpHost>,
+        jumps: &[JumpHost],
         known_hosts: &std::path::Path,
         allow_unknown_host: bool,
     ) -> AppResult<TunnelStatus> {
@@ -49,7 +49,7 @@ impl TunnelRegistry {
         let connection = ssh::connect(
             server,
             credentials,
-            jump_host,
+            jumps,
             known_hosts,
             allow_unknown_host,
         )?;

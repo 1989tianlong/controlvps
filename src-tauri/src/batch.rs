@@ -54,7 +54,7 @@ fn execute_job(job: &ConnectionJob, template: &str, known_hosts: &PathBuf) -> Ba
     let result = ssh::connect(
         &job.server,
         &job.credentials,
-        job.jump_host.as_ref(),
+        &job.jumps,
         known_hosts,
         false,
     )

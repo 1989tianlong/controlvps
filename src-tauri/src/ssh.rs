@@ -31,7 +31,7 @@ pub struct JumpHost {
 pub struct ConnectionJob {
     pub server: Server,
     pub credentials: Credentials,
-    pub jump_host: Option<JumpHost>,
+    pub jumps: Vec<JumpHost>,
 }
 
 pub struct SshConnection {
@@ -196,14 +196,14 @@ impl ConnectionTrace {
 pub fn connect(
     server: &Server,
     credentials: &Credentials,
-    jump_host: Option<&JumpHost>,
+    jumps: &[JumpHost],
     known_hosts_path: &Path,
     allow_unknown_host: bool,
 ) -> AppResult<SshConnection> {
     connect_inner(
         server,
         credentials,
-        jump_host,
+        jumps,
         known_hosts_path,
         allow_unknown_host,
         None,
@@ -213,67 +213,113 @@ pub fn connect(
 fn connect_inner(
     server: &Server,
     credentials: &Credentials,
-    jump_host: Option<&JumpHost>,
+    jumps: &[JumpHost],
     known_hosts_path: &Path,
     allow_unknown_host: bool,
     mut trace: Option<&mut ConnectionTrace>,
 ) -> AppResult<SshConnection> {
-    if let Some(jump) = jump_host {
-        if jump.server.id == server.id {
+    if jumps.len() > 4 {
+        return Err(AppError::Message("跳板链最多支持 4 跳".into()));
+    }
+    let mut previous: Option<SshConnection> = None;
+    for (index, hop) in jumps.iter().enumerate() {
+        if hop.server.id == server.id {
             return Err(AppError::Message("服务器不能使用自身作为跳板机".into()));
         }
-        let jump_connection = connect_direct(
-            &jump.server,
-            &jump.credentials,
-            known_hosts_path,
-            allow_unknown_host,
-            "跳板机",
-            trace.as_deref_mut(),
-        )?;
-        let channel = match trace.as_deref_mut() {
-            Some(trace) => trace.step("跳板通道", || {
-                let channel = jump_connection.session.channel_direct_tcpip(
-                    &server.host,
-                    server.port,
-                    None,
-                )?;
-                Ok((
-                    channel,
-                    format!("跳板机已转发到 {}:{}", server.host, server.port),
-                ))
-            })?,
-            None => {
-                jump_connection
-                    .session
-                    .channel_direct_tcpip(&server.host, server.port, None)?
-            }
+        if jumps
+            .iter()
+            .filter(|item| item.server.id == hop.server.id)
+            .count()
+            > 1
+        {
+            return Err(AppError::Message(
+                "跳板链中不能重复使用同一台服务器".into(),
+            ));
+        }
+        let label = format!("跳板 {}", index + 1);
+        let connection = match previous.take() {
+            None => connect_direct(
+                &hop.server,
+                &hop.credentials,
+                known_hosts_path,
+                allow_unknown_host,
+                &label,
+                trace.as_deref_mut(),
+            )?,
+            Some(base) => connect_over(
+                base,
+                &hop.server,
+                &hop.credentials,
+                known_hosts_path,
+                allow_unknown_host,
+                &label,
+                trace.as_deref_mut(),
+            )?,
         };
-        jump_connection.session.set_blocking(false);
-        let stream = bridge_channel(channel)?;
-        let target_allow_unknown = allow_unknown_host && !jump_connection.accepted_unknown_host;
-        let mut connection = connect_on_stream(
-            stream,
-            server,
-            credentials,
-            known_hosts_path,
-            target_allow_unknown,
-            "目标主机",
-            trace,
-        )?;
-        connection.jump_connection = Some(Box::new(jump_connection));
-        Ok(connection)
-    } else {
-        let stream = open_tcp_stream(server, "目标主机", trace.as_deref_mut())?;
-        connect_on_stream(
-            stream,
+        previous = Some(connection);
+    }
+    match previous {
+        None => {
+            let stream = open_tcp_stream(server, "目标主机", trace.as_deref_mut())?;
+            connect_on_stream(
+                stream,
+                server,
+                credentials,
+                known_hosts_path,
+                allow_unknown_host,
+                "目标主机",
+                trace,
+            )
+        }
+        Some(base) => connect_over(
+            base,
             server,
             credentials,
             known_hosts_path,
             allow_unknown_host,
             "目标主机",
             trace,
-        )
+        ),
     }
+}
+
+fn connect_over(
+    base: SshConnection,
+    server: &Server,
+    credentials: &Credentials,
+    known_hosts_path: &Path,
+    allow_unknown_host: bool,
+    label: &str,
+    mut trace: Option<&mut ConnectionTrace>,
+) -> AppResult<SshConnection> {
+    let channel = match trace.as_deref_mut() {
+        Some(trace) => trace.step("跳板通道", || {
+            let channel = base
+                .session
+                .channel_direct_tcpip(&server.host, server.port, None)?;
+            Ok((
+                channel,
+                format!("已转发到 {}:{}", server.host, server.port),
+            ))
+        })?,
+        None => base
+            .session
+            .channel_direct_tcpip(&server.host, server.port, None)?,
+    };
+    base.session.set_blocking(false);
+    let stream = bridge_channel(channel)?;
+    let target_allow_unknown = allow_unknown_host && !base.accepted_unknown_host;
+    let mut connection = connect_on_stream(
+        stream,
+        server,
+        credentials,
+        known_hosts_path,
+        target_allow_unknown,
+        label,
+        trace,
+    )?;
+    connection.jump_connection = Some(Box::new(base));
+    Ok(connection)
 }
 
 fn connect_direct(
@@ -641,17 +687,20 @@ pub fn test(
 pub fn diagnose(
     server: &Server,
     credentials: &Credentials,
-    jump_host: Option<&JumpHost>,
+    jumps: &[JumpHost],
     known_hosts_path: &Path,
     allow_unknown_host: bool,
 ) -> AppResult<ConnectionReport> {
     let started = Instant::now();
     let mut trace = ConnectionTrace::default();
     let mut route = Vec::new();
-    if let Some(jump) = jump_host {
+    for (index, jump) in jumps.iter().enumerate() {
         route.push(format!(
-            "跳板：{} ({}:{})",
-            jump.server.name, jump.server.host, jump.server.port
+            "跳板 {}：{} ({}:{})",
+            index + 1,
+            jump.server.name,
+            jump.server.host,
+            jump.server.port
         ));
     }
     route.push(format!(
@@ -661,7 +710,7 @@ pub fn diagnose(
     let connection = match connect_inner(
         server,
         credentials,
-        jump_host,
+        jumps,
         known_hosts_path,
         allow_unknown_host,
         Some(&mut trace),

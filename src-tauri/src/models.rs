@@ -30,6 +30,8 @@ pub struct ServerInput {
     pub expires_at: Option<String>,
     pub jump_server_id: Option<String>,
     #[serde(default)]
+    pub jump_chain: Vec<String>,
+    #[serde(default)]
     pub auth_profile_id: Option<String>,
     #[serde(default)]
     pub cloud_account_id: Option<String>,
@@ -200,6 +202,8 @@ pub struct Server {
     pub currency: Option<String>,
     pub expires_at: Option<String>,
     pub jump_server_id: Option<String>,
+    #[serde(default)]
+    pub jump_chain: Vec<String>,
     pub auth_profile_id: Option<String>,
     pub cloud_account_id: Option<String>,
     pub cloud_resource_id: Option<String>,

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
@@ -45,6 +46,7 @@ impl Database {
                 currency TEXT,
                 expires_at TEXT,
                 jump_server_id TEXT,
+                jump_chain TEXT,
                 auth_profile_id TEXT,
                 cloud_account_id TEXT,
                 cloud_resource_id TEXT,
@@ -301,6 +303,14 @@ impl Database {
         if !has_jump_server {
             connection.execute("ALTER TABLE servers ADD COLUMN jump_server_id TEXT", [])?;
         }
+        let has_jump_chain = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = 'jump_chain')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_jump_chain {
+            connection.execute("ALTER TABLE servers ADD COLUMN jump_chain TEXT", [])?;
+        }
         for column in ["auth_profile_id", "cloud_account_id", "cloud_resource_id"] {
             let exists = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
@@ -347,7 +357,7 @@ impl Database {
                     group_name, tags, provider, region, notes, cost, currency,
                     expires_at, jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
                     inherit_port, inherit_username, inherit_jump, inherit_auth,
-                    created_at, updated_at, has_password, has_key_passphrase
+                    created_at, updated_at, has_password, has_key_passphrase, jump_chain
              FROM servers ORDER BY COALESCE(group_name, ''), name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], row_to_server)?;
@@ -362,7 +372,7 @@ impl Database {
                         group_name, tags, provider, region, notes, cost, currency,
                         expires_at, jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
                         inherit_port, inherit_username, inherit_jump, inherit_auth,
-                        created_at, updated_at, has_password, has_key_passphrase
+                        created_at, updated_at, has_password, has_key_passphrase, jump_chain
                  FROM servers WHERE id = ?1",
                 [id],
                 row_to_server,
@@ -378,15 +388,15 @@ impl Database {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let connection = self.connection()?;
-        validate_jump_server(&connection, &id, input.jump_server_id.as_deref())?;
+        validate_jump_route(&connection, &id, input.jump_server_id.as_deref(), &input.jump_chain)?;
         connection.execute(
             "INSERT INTO servers (
                 id, name, host, port, username, auth_method, private_key_path,
                 group_name, tags, provider, region, notes, cost, currency, expires_at,
                 jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
                 inherit_port, inherit_username, inherit_jump, inherit_auth,
-                created_at, updated_at, has_password, has_key_passphrase
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                created_at, updated_at, has_password, has_key_passphrase, jump_chain
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 id,
                 input.name.trim(),
@@ -415,6 +425,7 @@ impl Database {
                 now,
                 input.password.as_deref().is_some_and(|value| !value.is_empty()),
                 input.key_passphrase.as_deref().is_some_and(|value| !value.is_empty()),
+                serde_json::to_string(&input.jump_chain).map_err(|e| AppError::Message(e.to_string()))?,
             ],
         )?;
         drop(connection);
@@ -433,7 +444,7 @@ impl Database {
             None => existing.has_key_passphrase,
         };
         let connection = self.connection()?;
-        validate_jump_server(&connection, id, input.jump_server_id.as_deref())?;
+        validate_jump_route(&connection, id, input.jump_server_id.as_deref(), &input.jump_chain)?;
         connection.execute(
             "UPDATE servers SET name = ?2, host = ?3, port = ?4, username = ?5,
                 auth_method = ?6, private_key_path = ?7, group_name = ?8, tags = ?9,
@@ -441,7 +452,7 @@ impl Database {
                 expires_at = ?15, jump_server_id = ?16, auth_profile_id = ?17,
                 cloud_account_id = ?18, cloud_resource_id = ?19,
                 inherit_port = ?20, inherit_username = ?21, inherit_jump = ?22, inherit_auth = ?23,
-                updated_at = ?24, has_password = ?25, has_key_passphrase = ?26
+                updated_at = ?24, has_password = ?25, has_key_passphrase = ?26, jump_chain = ?27
              WHERE id = ?1",
             params![
                 id,
@@ -470,6 +481,7 @@ impl Database {
                 Utc::now().to_rfc3339(),
                 has_password,
                 has_key_passphrase,
+                serde_json::to_string(&input.jump_chain).map_err(|e| AppError::Message(e.to_string()))?,
             ],
         )?;
         drop(connection);
@@ -478,11 +490,26 @@ impl Database {
 
     pub fn ensure_server_deletable(&self, id: &str) -> AppResult<()> {
         let connection = self.connection()?;
-        let dependents = connection.query_row(
+        let mut dependents: i64 = connection.query_row(
             "SELECT COUNT(*) FROM servers WHERE jump_server_id = ?1",
             [id],
-            |row| row.get::<_, i64>(0),
+            |row| row.get(0),
         )?;
+        let mut statement = connection.prepare(
+            "SELECT jump_chain FROM servers WHERE id <> ?1 AND jump_chain IS NOT NULL",
+        )?;
+        let rows = statement.query_map([id], |row| row.get::<_, Option<String>>(0))?;
+        for row in rows {
+            let chain: Vec<String> = row
+                .ok()
+                .flatten()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default();
+            if chain.iter().any(|hop| hop == id) {
+                dependents += 1;
+            }
+        }
+        drop(statement);
         if dependents > 0 {
             return Err(AppError::Message(format!(
                 "这台 VPS 正被 {dependents} 台服务器用作跳板机，请先修改它们的连接路由"
@@ -2563,43 +2590,113 @@ fn validate_snippet(input: &SnippetInput) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_jump_server(
+fn validate_jump_route(
     connection: &Connection,
     server_id: &str,
     jump_server_id: Option<&str>,
+    jump_chain: &[String],
 ) -> AppResult<()> {
-    let Some(jump_server_id) = clean(jump_server_id) else {
-        return Ok(());
-    };
-    if jump_server_id == server_id {
-        return Err(AppError::Message("服务器不能使用自身作为跳板机".into()));
+    let mut hops: Vec<String> = jump_chain
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if hops.is_empty() {
+        if let Some(single) = clean(jump_server_id) {
+            hops.push(single);
+        }
     }
-    let dependents = connection.query_row(
-        "SELECT COUNT(*) FROM servers WHERE jump_server_id = ?1",
-        [server_id],
-        |row| row.get::<_, i64>(0),
-    )?;
-    if dependents > 0 {
-        return Err(AppError::Message(
-            "这台 VPS 正作为其他服务器的跳板机，不能再配置上级跳板".into(),
-        ));
+    if hops.len() > 4 {
+        return Err(AppError::Message("跳板链最多支持 4 跳".into()));
     }
-    let nested = connection
-        .query_row(
-            "SELECT jump_server_id FROM servers WHERE id = ?1",
-            [&jump_server_id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .map_err(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => AppError::Message("所选跳板机不存在".into()),
-            other => other.into(),
-        })?;
-    if nested.is_some() {
-        return Err(AppError::Message(
-            "当前支持一级跳板，请选择直接联网的 VPS 作为跳板机".into(),
-        ));
+    let mut seen = HashSet::new();
+    for hop in &hops {
+        if hop == server_id {
+            return Err(AppError::Message("服务器不能使用自身作为跳板机".into()));
+        }
+        if !seen.insert(hop.clone()) {
+            return Err(AppError::Message(
+                "跳板链中不能重复使用同一台服务器".into(),
+            ));
+        }
+        let exists = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE id = ?1)",
+            [hop],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exists {
+            return Err(AppError::Message("所选跳板机不存在".into()));
+        }
+    }
+    for hop in &hops {
+        if route_reaches(connection, hop, server_id)? {
+            return Err(AppError::Message(
+                "跳板链形成环路，请调整连接路由".into(),
+            ));
+        }
     }
     Ok(())
+}
+
+fn effective_route(connection: &Connection, server_id: &str) -> AppResult<Vec<String>> {
+    let row = connection.query_row(
+        "SELECT s.jump_chain, s.jump_server_id, s.inherit_jump, g.jump_server_id
+         FROM servers s LEFT JOIN server_groups g ON g.name = s.group_name
+         WHERE s.id = ?1",
+        [server_id],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
+    );
+    let (chain, jump, inherit, group_jump) = match row {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let chain: Vec<String> = chain
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if !chain.is_empty() {
+        return Ok(chain);
+    }
+    if let Some(jump) = jump {
+        return Ok(vec![jump]);
+    }
+    if inherit {
+        if let Some(group_jump) = group_jump {
+            return Ok(vec![group_jump]);
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn route_reaches(connection: &Connection, start: &str, target: &str) -> AppResult<bool> {
+    let mut stack = vec![start.to_string()];
+    let mut visited = HashSet::new();
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        if current == target {
+            return Ok(true);
+        }
+        if visited.len() > 12 {
+            return Ok(false);
+        }
+        for next in effective_route(connection, &current)? {
+            stack.push(next);
+        }
+    }
+    Ok(false)
 }
 
 fn validate_server(input: &ServerInput) -> AppResult<()> {
@@ -2876,6 +2973,10 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
         updated_at: row.get(24)?,
         has_password: row.get(25)?,
         has_key_passphrase: row.get(26)?,
+        jump_chain: row
+            .get::<_, Option<String>>(27)?
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default(),
     })
 }
 

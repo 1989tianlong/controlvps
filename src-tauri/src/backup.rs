@@ -295,9 +295,16 @@ impl RestoreContext<'_> {
         if !self.importing.insert(old_id.to_string()) {
             return Err(AppError::Message("备份中的跳板机引用存在循环".into()));
         }
-        let jump_server_id = match server.jump_server_id.as_deref() {
-            Some(jump_id) => Some(self.import_server(jump_id)?),
-            None => None,
+        let mut jump_chain = Vec::new();
+        for hop in &server.jump_chain {
+            jump_chain.push(self.import_server(hop)?);
+        }
+        let jump_server_id = match jump_chain.first() {
+            Some(first) => Some(first.clone()),
+            None => match server.jump_server_id.as_deref() {
+                Some(jump_id) => Some(self.import_server(jump_id)?),
+                None => None,
+            },
         };
         let credentials = self.backup.credentials.get(old_id);
         let input = ServerInput {
@@ -318,6 +325,7 @@ impl RestoreContext<'_> {
             currency: server.currency.clone(),
             expires_at: server.expires_at.clone(),
             jump_server_id,
+            jump_chain,
             auth_profile_id: None,
             cloud_account_id: None,
             cloud_resource_id: None,

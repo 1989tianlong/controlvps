@@ -23,6 +23,7 @@ export interface ServerInput {
   currency?: string;
   expiresAt?: string;
   jumpServerId?: string;
+  jumpChain: string[];
   authProfileId?: string;
   cloudAccountId?: string;
   cloudResourceId?: string;
