@@ -3,15 +3,17 @@ import { ArrowUpRight, Bell, LockKeyhole, Save } from "lucide-react";
 import { api, errorMessage, openExternal } from "../lib/api";
 import { sendSystemNotification } from "../lib/notifications";
 import type { AppInfo, MonitoringSettings } from "../types";
+import type { AppUpdate } from "../hooks/useAppUpdate";
 import { BackupSettings } from "./BackupSettings";
 
 interface Props {
   settings?: MonitoringSettings;
   onSettingsChange: (settings: MonitoringSettings) => void;
+  appUpdate: AppUpdate;
   onWorkspaceRestored: () => void;
 }
 
-export function SettingsPage({ settings, onSettingsChange, onWorkspaceRestored }: Props) {
+export function SettingsPage({ settings, onSettingsChange, appUpdate, onWorkspaceRestored }: Props) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [draft, setDraft] = useState<MonitoringSettings>();
   const [saving, setSaving] = useState(false);
@@ -20,6 +22,18 @@ export function SettingsPage({ settings, onSettingsChange, onWorkspaceRestored }
 
   useEffect(() => { api.appInfo().then(setInfo).catch((reason) => setError(errorMessage(reason))); }, []);
   useEffect(() => { setDraft(settings); }, [settings]);
+
+  const updateStatus = (() => {
+    switch (appUpdate.state.status) {
+      case "checking": return "正在检查";
+      case "current": return "已是最新版本";
+      case "available": return `可更新到 v${appUpdate.state.version}`;
+      case "downloading": return appUpdate.state.percent === null ? "正在下载" : `正在下载 ${appUpdate.state.percent}%`;
+      case "ready": return "已下载，重启后生效";
+      case "error": return "检查失败";
+      default: return "";
+    }
+  })();
 
   const update = <K extends keyof MonitoringSettings>(key: K, value: MonitoringSettings[K]) => {
     setDraft((current) => current ? { ...current, [key]: value } : current);
@@ -71,7 +85,7 @@ export function SettingsPage({ settings, onSettingsChange, onWorkspaceRestored }
       <div className="setting-row"><div><h2>本地数据目录</h2><p>包含服务器清单、主机与服务历史、告警事件和操作记录。</p></div><code className="setting-value measured">{info?.dataDir ?? "正在读取"}</code></div>
       <div className="setting-row"><div><h2>可信主机密钥</h2><p>首次确认后保存指纹对应的公钥，密钥变化会触发安全错误。</p></div><code className="setting-value measured">{info?.knownHostsPath ?? "正在读取"}</code></div>
       <div className="setting-row"><div><h2>开源许可证</h2><p>ControlVPS 使用 GNU General Public License v3.0。</p></div><button className="btn justify-self-end" type="button" onClick={() => openExternal("https://github.com/1989tianlong/controlvps")}>查看仓库<ArrowUpRight size={15} /></button></div>
-      <div className="setting-row"><div><h2>应用版本</h2><p>Rust、Tauri 2、React 与 Tailwind CSS。</p></div><span className="measured justify-self-end">v{info?.version ?? "0.1.0"}</span></div>
+      <div className="setting-row"><div><h2>应用更新</h2><p>启动后自动检查 GitHub 已发布版本；安装包通过签名校验后，重启应用生效。</p></div><div className="setting-actions">{updateStatus && <span className="measured">{updateStatus}</span>}<span className="measured">v{info?.version ?? "0.1.0"}</span>{appUpdate.state.status === "ready" ? <button className="btn btn-primary" type="button" onClick={() => void appUpdate.restart()}>重启应用</button> : <>{appUpdate.state.status === "available" && <button className="btn btn-primary" type="button" onClick={() => void appUpdate.install()}>下载并安装</button>}<button className="btn" type="button" disabled={appUpdate.state.status === "checking" || appUpdate.state.status === "downloading"} onClick={() => void appUpdate.checkForUpdate(true)}>{appUpdate.state.status === "checking" ? "正在检查" : "检查更新"}</button></>}</div></div>
     </div>
     <BackupSettings onRestored={onWorkspaceRestored} />
   </>;

@@ -20,6 +20,8 @@ import { TunnelsPage } from "./components/TunnelsPage";
 import { MonitoringPage } from "./components/MonitoringPage";
 import { SecurityCenter } from "./components/SecurityCenter";
 import { TerminalWorkspace, type TerminalRequest } from "./components/TerminalWorkspace";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { useAppUpdate } from "./hooks/useAppUpdate";
 
 const pages = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
@@ -56,6 +58,7 @@ export default function App() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Server | null>(null);
   const { execute, trustDialog } = useHostTrust();
+  const appUpdate = useAppUpdate();
   const updateMetrics = useCallback((id: string, value: ServerMetrics) => {
     setMetrics((current) => ({ ...current, [id]: value }));
   }, []);
@@ -126,6 +129,7 @@ export default function App() {
     <main className="main-column">
       <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label">{collecting || serviceMonitoring.checkingIds.length > 0 ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting || serviceMonitoring.checkingIds.length > 0 ? "正在采集监控" : "本地工作区"}</span></header>
       <div className="page">
+        <UpdateBanner state={appUpdate.state} dismissed={appUpdate.dismissed} onInstall={() => void appUpdate.install()} onRestart={() => void appUpdate.restart()} onDismiss={appUpdate.dismiss} />
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
         {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
@@ -138,7 +142,7 @@ export default function App() {
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}
-        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
+        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} appUpdate={appUpdate} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
       </div>
     </main>
     <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />

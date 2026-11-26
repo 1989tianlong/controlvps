@@ -6,3 +6,5 @@ src-tauri/gen/
 *.log
 .hallmark/
 .tmp/
+latest.json
+controlvps-updater.key
