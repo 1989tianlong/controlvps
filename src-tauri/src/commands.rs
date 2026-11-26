@@ -13,19 +13,21 @@ use crate::error::{AppError, AppResult, CommandError, CommandResult};
 use crate::files;
 use crate::metrics;
 use crate::models::{
-    ActionResult, AlertEvent, AuthMethod, BackupPreview, BackupRestoreResult, BackupSummary,
-    BatchResult, ComposeAction, ComposeActionResult, ComposeApplication, ComposeDeploymentHistory,
-    ComposeDeploymentPlan, ComposeDeploymentResult, ComposeEditInput, ComposeLogs, ComposeOverview,
-    ConnectionReport, ConnectionTest, DataProtectionInput, DataProtectionOverview,
-    DataProtectionPolicy, DataProtectionRestoreResult, DataProtectionRun, DockerAction,
-    DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer, FileTransferKind,
-    FileTransferTask, MetricSample, MonitoringSettings, OperationLog, PortForwardInput,
-    PortForwardRule, QuickAction, Runbook, RunbookExecution, RunbookExecutionRequest, RunbookInput,
-    RunbookResult, RunbookSchedule, RunbookScheduleInput, RunbookTrigger, SecurityReport, Server,
-    ServerInput, ServerMetrics, ServiceCheckResult, ServiceEvent, ServiceMonitorInput,
-    ServiceMonitorView, ServiceNotificationInput, ServiceNotificationSettings, ServiceSample,
-    Snippet, SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs,
-    SystemdOverview, TerminalSession, TunnelStatus,
+    ActionResult, AlertEvent, AuthMethod, AuthProfile, AuthProfileInput, BackupPreview,
+    BackupRestoreResult, BackupSummary, BatchResult, CloudAccount, CloudAccountInput,
+    CloudImportRequest, CloudImportResult, CloudPreview, ComposeAction, ComposeActionResult,
+    ComposeApplication, ComposeDeploymentHistory, ComposeDeploymentPlan, ComposeDeploymentResult,
+    ComposeEditInput, ComposeLogs, ComposeOverview, ConnectionReport, ConnectionTest,
+    DataProtectionInput, DataProtectionOverview, DataProtectionPolicy, DataProtectionRestoreResult,
+    DataProtectionRun, DockerAction, DockerActionResult, DockerLogs, DockerOverview, FileListing,
+    FileTransfer, FileTransferKind, FileTransferTask, MetricSample, MonitoringSettings,
+    OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook, RunbookExecution,
+    RunbookExecutionRequest, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
+    RunbookTrigger, SecurityReport, Server, ServerGroup, ServerGroupInput, ServerInput,
+    ServerMetrics, ServiceCheckResult, ServiceEvent, ServiceMonitorInput, ServiceMonitorView,
+    ServiceNotificationInput, ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput,
+    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
+    TerminalSession, TunnelStatus,
 };
 use crate::runbook::RunbookExecutionRegistry;
 use crate::security;
@@ -233,6 +235,100 @@ pub fn list_data_protection_runs(
 }
 
 #[tauri::command]
+pub fn list_cloud_accounts(db: State<'_, Database>) -> CommandResult<Vec<CloudAccount>> {
+    db.list_cloud_accounts().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_cloud_account(
+    db: State<'_, Database>,
+    input: CloudAccountInput,
+) -> CommandResult<CloudAccount> {
+    crate::assets::create_account(&db, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_cloud_account(
+    db: State<'_, Database>,
+    id: String,
+    input: CloudAccountInput,
+) -> CommandResult<CloudAccount> {
+    crate::assets::update_account(&db, &id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_cloud_account(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    crate::assets::delete_account(&db, &id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn preview_cloud_assets(db: State<'_, Database>, id: String) -> CommandResult<CloudPreview> {
+    crate::assets::preview(&db, &id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn import_cloud_assets(
+    db: State<'_, Database>,
+    request: CloudImportRequest,
+) -> CommandResult<CloudImportResult> {
+    crate::assets::import(&db, &request).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_auth_profiles(db: State<'_, Database>) -> CommandResult<Vec<AuthProfile>> {
+    db.list_auth_profiles().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_auth_profile(
+    db: State<'_, Database>,
+    input: AuthProfileInput,
+) -> CommandResult<AuthProfile> {
+    crate::assets::create_profile(&db, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_auth_profile(
+    db: State<'_, Database>,
+    id: String,
+    input: AuthProfileInput,
+) -> CommandResult<AuthProfile> {
+    crate::assets::update_profile(&db, &id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_auth_profile(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    crate::assets::delete_profile(&db, &id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_server_groups(db: State<'_, Database>) -> CommandResult<Vec<ServerGroup>> {
+    db.list_server_groups().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_server_group(
+    db: State<'_, Database>,
+    input: ServerGroupInput,
+) -> CommandResult<ServerGroup> {
+    crate::assets::create_group(&db, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_server_group(
+    db: State<'_, Database>,
+    id: String,
+    input: ServerGroupInput,
+) -> CommandResult<ServerGroup> {
+    crate::assets::update_group(&db, &id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_server_group(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    db.delete_server_group(&id).map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn list_servers(db: State<'_, Database>) -> CommandResult<Vec<Server>> {
     db.list_servers().map_err(Into::into)
 }
@@ -305,6 +401,9 @@ pub fn import_ssh_config(db: State<'_, Database>, path: String) -> CommandResult
             currency: None,
             expires_at: None,
             jump_server_id: None,
+            auth_profile_id: None,
+            cloud_account_id: None,
+            cloud_resource_id: None,
         };
         match db.create_server(&input) {
             Ok(server) => {
@@ -1737,25 +1836,7 @@ pub fn clear_finished_file_transfers(
 }
 
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {
-    let server = db.get_server(id).map_err(CommandError::from)?;
-    let credentials = ssh::load_credentials(&server).map_err(CommandError::from)?;
-    let jump_host = match server.jump_server_id.as_deref() {
-        Some(jump_id) => {
-            let jump_server = db.get_server(jump_id).map_err(CommandError::from)?;
-            let jump_credentials =
-                ssh::load_credentials(&jump_server).map_err(CommandError::from)?;
-            Some(ssh::JumpHost {
-                server: jump_server,
-                credentials: jump_credentials,
-            })
-        }
-        None => None,
-    };
-    Ok(ssh::ConnectionJob {
-        server,
-        credentials,
-        jump_host,
-    })
+    crate::runbook::connection_job(db, id).map_err(CommandError::from)
 }
 
 fn log_operation_result<T>(

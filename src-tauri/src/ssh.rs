@@ -106,6 +106,18 @@ pub fn delete_credentials(server_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+pub fn save_profile_secret(profile_id: &str, kind: &str, value: &str) -> AppResult<()> {
+    set_secret(&format!("profile:{profile_id}"), kind, value)
+}
+
+pub fn profile_secret(profile_id: &str, kind: &str) -> AppResult<Option<String>> {
+    get_secret(&format!("profile:{profile_id}"), kind)
+}
+
+pub fn delete_profile_secret(profile_id: &str, kind: &str) -> AppResult<()> {
+    delete_secret(&format!("profile:{profile_id}"), kind)
+}
+
 pub fn load_credentials(server: &Server) -> AppResult<Credentials> {
     Ok(Credentials {
         password: match server.auth_method {

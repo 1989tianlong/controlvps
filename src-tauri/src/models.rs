@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
     Password,
@@ -29,6 +29,148 @@ pub struct ServerInput {
     pub currency: Option<String>,
     pub expires_at: Option<String>,
     pub jump_server_id: Option<String>,
+    #[serde(default)]
+    pub auth_profile_id: Option<String>,
+    #[serde(default)]
+    pub cloud_account_id: Option<String>,
+    #[serde(default)]
+    pub cloud_resource_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudProvider {
+    DigitalOcean,
+    Tailscale,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccountInput {
+    pub name: String,
+    pub provider: CloudProvider,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccount {
+    pub id: String,
+    pub name: String,
+    pub provider: CloudProvider,
+    pub has_token: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_synced_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthProfileInput {
+    pub name: String,
+    pub auth_method: AuthMethod,
+    pub private_key_path: Option<String>,
+    pub password: Option<String>,
+    pub key_passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthProfile {
+    pub id: String,
+    pub name: String,
+    pub auth_method: AuthMethod,
+    pub private_key_path: Option<String>,
+    pub has_password: bool,
+    pub has_key_passphrase: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerGroupInput {
+    pub name: String,
+    pub jump_server_id: Option<String>,
+    pub auth_profile_id: Option<String>,
+    pub default_port: Option<u16>,
+    pub default_username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerGroup {
+    pub id: String,
+    pub name: String,
+    pub jump_server_id: Option<String>,
+    pub auth_profile_id: Option<String>,
+    pub default_port: Option<u16>,
+    pub default_username: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudResource {
+    pub provider: CloudProvider,
+    pub resource_id: String,
+    pub name: String,
+    pub host: String,
+    pub region: Option<String>,
+    pub status: String,
+    pub tags: Vec<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudChangeKind {
+    Added,
+    Changed,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudChange {
+    pub kind: CloudChangeKind,
+    pub resource: CloudResource,
+    pub server_id: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudPreview {
+    pub account_id: String,
+    pub provider: CloudProvider,
+    pub fetched_at: String,
+    pub added: usize,
+    pub changed: usize,
+    pub missing: usize,
+    pub unchanged: usize,
+    pub changes: Vec<CloudChange>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImportRequest {
+    pub account_id: String,
+    pub resource_ids: Vec<String>,
+    pub group_name: Option<String>,
+    pub username: Option<String>,
+    pub port: Option<u16>,
+    pub auth_profile_id: Option<String>,
+    pub jump_server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImportResult {
+    pub created: usize,
+    pub updated: usize,
+    pub skipped: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +192,9 @@ pub struct Server {
     pub currency: Option<String>,
     pub expires_at: Option<String>,
     pub jump_server_id: Option<String>,
+    pub auth_profile_id: Option<String>,
+    pub cloud_account_id: Option<String>,
+    pub cloud_resource_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub has_password: bool,

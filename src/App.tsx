@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import { Activity, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
@@ -10,6 +10,7 @@ import { sendSystemNotification } from "./lib/notifications";
 import { ServerForm } from "./components/ServerForm";
 import { OverviewPage } from "./components/OverviewPage";
 import { ServersPage } from "./components/ServersPage";
+import { AssetsPage } from "./components/AssetsPage";
 import { DiscoveryPage } from "./components/DiscoveryPage";
 import { FreePage } from "./components/FreePage";
 import { ActivityPage } from "./components/ActivityPage";
@@ -28,6 +29,7 @@ const pages = [
   { id: "terminal", label: "终端工作区", icon: TerminalSquare },
   { id: "automation", label: "批量运维", icon: ListChecks },
   { id: "tunnels", label: "隧道中心", icon: Network },
+  { id: "assets", label: "云资产", icon: Cloud },
   { id: "discover", label: "发现 VPS", icon: Compass },
   { id: "free", label: "免费渠道", icon: Gift },
   { id: "activity", label: "操作记录", icon: ScrollText },
@@ -132,6 +134,7 @@ export default function App() {
         {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} requestedMode={automationMode} />}
         {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
         <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>
+        {page === "assets" && <AssetsPage servers={servers} onChanged={loadServers} />}
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}

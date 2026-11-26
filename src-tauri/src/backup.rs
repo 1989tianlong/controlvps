@@ -133,7 +133,7 @@ pub fn restore(db: &Database, path: &Path, password: &str) -> AppResult<BackupRe
         .servers
         .iter()
         .map(|server| server.id.clone())
-        .collect::<Vec<_>>();
+        .collect::<Vec<String>>();
     let mut context = RestoreContext {
         db,
         backup: &backup,
@@ -318,6 +318,9 @@ impl RestoreContext<'_> {
             currency: server.currency.clone(),
             expires_at: server.expires_at.clone(),
             jump_server_id,
+            auth_profile_id: None,
+            cloud_account_id: None,
+            cloud_resource_id: None,
         };
         let imported = self.db.create_server(&input)?;
         if let Err(error) = ssh::save_credentials(&imported, &input) {

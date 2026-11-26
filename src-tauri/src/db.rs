@@ -6,14 +6,15 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    AlertEvent, AlertKind, AlertStatus, DataProtectionAction, DataProtectionInput,
+    AlertEvent, AlertKind, AlertStatus, AuthProfile, AuthProfileInput, CloudAccount,
+    CloudAccountInput, CloudProvider, DataProtectionAction, DataProtectionInput,
     DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, MetricSample,
     MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, ProtectionSourceKind,
     ResticRepositoryKind, Runbook, RunbookExecution, RunbookExecutionRequest,
     RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
-    RunbookStep, RunbookTrigger, Server, ServerInput, ServerMetrics, ServiceEvent,
-    ServiceEventKind, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind, ServiceMonitorView,
-    ServiceProbe, ServiceSample, Snippet, SnippetInput, WorkspaceBackup,
+    RunbookStep, RunbookTrigger, Server, ServerGroup, ServerGroupInput, ServerInput, ServerMetrics,
+    ServiceEvent, ServiceEventKind, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind,
+    ServiceMonitorView, ServiceProbe, ServiceSample, Snippet, SnippetInput, WorkspaceBackup,
 };
 
 #[derive(Clone)]
@@ -44,10 +45,42 @@ impl Database {
                 currency TEXT,
                 expires_at TEXT,
                 jump_server_id TEXT,
+                auth_profile_id TEXT,
+                cloud_account_id TEXT,
+                cloud_resource_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 has_password INTEGER NOT NULL DEFAULT 0,
                 has_key_passphrase INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS cloud_accounts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                has_token INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_synced_at TEXT
+             );
+             CREATE TABLE IF NOT EXISTS auth_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                auth_method TEXT NOT NULL,
+                private_key_path TEXT,
+                has_password INTEGER NOT NULL DEFAULT 0,
+                has_key_passphrase INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS server_groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                jump_server_id TEXT,
+                auth_profile_id TEXT,
+                default_port INTEGER,
+                default_username TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS operation_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,6 +297,16 @@ impl Database {
         if !has_jump_server {
             connection.execute("ALTER TABLE servers ADD COLUMN jump_server_id TEXT", [])?;
         }
+        for column in ["auth_profile_id", "cloud_account_id", "cloud_resource_id"] {
+            let exists = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
+                [column],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !exists {
+                connection.execute(&format!("ALTER TABLE servers ADD COLUMN {column} TEXT"), [])?;
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -280,7 +323,8 @@ impl Database {
         let mut statement = connection.prepare(
             "SELECT id, name, host, port, username, auth_method, private_key_path,
                     group_name, tags, provider, region, notes, cost, currency,
-                    expires_at, jump_server_id, created_at, updated_at, has_password, has_key_passphrase
+                    expires_at, jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
+                    created_at, updated_at, has_password, has_key_passphrase
              FROM servers ORDER BY COALESCE(group_name, ''), name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], row_to_server)?;
@@ -293,7 +337,8 @@ impl Database {
             .query_row(
                 "SELECT id, name, host, port, username, auth_method, private_key_path,
                         group_name, tags, provider, region, notes, cost, currency,
-                        expires_at, jump_server_id, created_at, updated_at, has_password, has_key_passphrase
+                        expires_at, jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
+                        created_at, updated_at, has_password, has_key_passphrase
                  FROM servers WHERE id = ?1",
                 [id],
                 row_to_server,
@@ -314,8 +359,9 @@ impl Database {
             "INSERT INTO servers (
                 id, name, host, port, username, auth_method, private_key_path,
                 group_name, tags, provider, region, notes, cost, currency, expires_at,
-                jump_server_id, created_at, updated_at, has_password, has_key_passphrase
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                jump_server_id, auth_profile_id, cloud_account_id, cloud_resource_id,
+                created_at, updated_at, has_password, has_key_passphrase
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 id,
                 input.name.trim(),
@@ -333,6 +379,9 @@ impl Database {
                 clean(input.currency.as_deref()),
                 clean(input.expires_at.as_deref()),
                 clean(input.jump_server_id.as_deref()),
+                clean(input.auth_profile_id.as_deref()),
+                clean(input.cloud_account_id.as_deref()),
+                clean(input.cloud_resource_id.as_deref()),
                 now,
                 now,
                 input.password.as_deref().is_some_and(|value| !value.is_empty()),
@@ -360,8 +409,9 @@ impl Database {
             "UPDATE servers SET name = ?2, host = ?3, port = ?4, username = ?5,
                 auth_method = ?6, private_key_path = ?7, group_name = ?8, tags = ?9,
                 provider = ?10, region = ?11, notes = ?12, cost = ?13, currency = ?14,
-                expires_at = ?15, jump_server_id = ?16, updated_at = ?17,
-                has_password = ?18, has_key_passphrase = ?19
+                expires_at = ?15, jump_server_id = ?16, auth_profile_id = ?17,
+                cloud_account_id = ?18, cloud_resource_id = ?19, updated_at = ?20,
+                has_password = ?21, has_key_passphrase = ?22
              WHERE id = ?1",
             params![
                 id,
@@ -380,6 +430,9 @@ impl Database {
                 clean(input.currency.as_deref()),
                 clean(input.expires_at.as_deref()),
                 clean(input.jump_server_id.as_deref()),
+                clean(input.auth_profile_id.as_deref()),
+                clean(input.cloud_account_id.as_deref()),
+                clean(input.cloud_resource_id.as_deref()),
                 Utc::now().to_rfc3339(),
                 has_password,
                 has_key_passphrase,
@@ -406,8 +459,312 @@ impl Database {
 
     pub fn delete_server(&self, id: &str) -> AppResult<()> {
         self.ensure_server_deletable(id)?;
+        let connection = self.connection()?;
+        let groups = connection.query_row(
+            "SELECT COUNT(*) FROM server_groups WHERE jump_server_id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if groups > 0 {
+            return Err(AppError::Message(format!(
+                "这台 VPS 是 {groups} 个分组的默认跳板机，请先修改分组"
+            )));
+        }
+        connection.execute("DELETE FROM servers WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn list_cloud_accounts(&self) -> AppResult<Vec<CloudAccount>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, provider, has_token, created_at, updated_at, last_synced_at
+             FROM cloud_accounts ORDER BY name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([], row_to_cloud_account)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_cloud_account(&self, id: &str) -> AppResult<CloudAccount> {
         self.connection()?
-            .execute("DELETE FROM servers WHERE id = ?1", [id])?;
+            .query_row(
+                "SELECT id, name, provider, has_token, created_at, updated_at, last_synced_at
+                 FROM cloud_accounts WHERE id = ?1",
+                [id],
+                row_to_cloud_account,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这个云账户".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_cloud_account(&self, input: &CloudAccountInput) -> AppResult<CloudAccount> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.connection()?.execute(
+            "INSERT INTO cloud_accounts (
+                id, name, provider, has_token, created_at, updated_at, last_synced_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+            params![
+                id,
+                input.name.trim(),
+                cloud_provider_name(input.provider),
+                input
+                    .token
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                now,
+                now,
+            ],
+        )?;
+        self.get_cloud_account(&id)
+    }
+
+    pub fn update_cloud_account(
+        &self,
+        id: &str,
+        input: &CloudAccountInput,
+    ) -> AppResult<CloudAccount> {
+        let existing = self.get_cloud_account(id)?;
+        let has_token = if input
+            .token
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            true
+        } else {
+            existing.has_token
+        };
+        self.connection()?.execute(
+            "UPDATE cloud_accounts SET name = ?2, provider = ?3, has_token = ?4, updated_at = ?5 WHERE id = ?1",
+            params![id, input.name.trim(), cloud_provider_name(input.provider), has_token, Utc::now().to_rfc3339()],
+        )?;
+        self.get_cloud_account(id)
+    }
+
+    pub fn touch_cloud_account(&self, id: &str) -> AppResult<()> {
+        self.connection()?.execute(
+            "UPDATE cloud_accounts SET last_synced_at = ?2 WHERE id = ?1",
+            params![id, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn ensure_cloud_account_deletable(&self, id: &str) -> AppResult<()> {
+        let linked = self.connection()?.query_row(
+            "SELECT COUNT(*) FROM servers WHERE cloud_account_id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if linked > 0 {
+            return Err(AppError::Message(format!(
+                "还有 {linked} 台本地 VPS 关联这个云账户，请先在资产页解除关联或删除这些 VPS"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn delete_cloud_account(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM cloud_accounts WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn find_cloud_server(
+        &self,
+        account_id: &str,
+        resource_id: &str,
+    ) -> AppResult<Option<Server>> {
+        let connection = self.connection()?;
+        let found = connection
+            .query_row(
+                "SELECT id FROM servers WHERE cloud_account_id = ?1 AND cloud_resource_id = ?2",
+                params![account_id, resource_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        drop(connection);
+        found.map(|id| self.get_server(&id)).transpose()
+    }
+
+    pub fn list_auth_profiles(&self) -> AppResult<Vec<AuthProfile>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, auth_method, private_key_path, has_password, has_key_passphrase, created_at, updated_at
+             FROM auth_profiles ORDER BY name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([], row_to_auth_profile)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_auth_profile(&self, id: &str) -> AppResult<AuthProfile> {
+        self.connection()?
+            .query_row(
+                "SELECT id, name, auth_method, private_key_path, has_password, has_key_passphrase, created_at, updated_at
+                 FROM auth_profiles WHERE id = ?1",
+                [id],
+                row_to_auth_profile,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => AppError::Message("未找到这个认证身份".into()),
+                other => other.into(),
+            })
+    }
+
+    pub fn create_auth_profile(&self, input: &AuthProfileInput) -> AppResult<AuthProfile> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.connection()?.execute(
+            "INSERT INTO auth_profiles (
+                id, name, auth_method, private_key_path, has_password, has_key_passphrase, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                input.name.trim(),
+                auth_name(&input.auth_method),
+                clean(input.private_key_path.as_deref()),
+                input.password.as_deref().is_some_and(|value| !value.is_empty()),
+                input.key_passphrase.as_deref().is_some_and(|value| !value.is_empty()),
+                now,
+                now,
+            ],
+        )?;
+        self.get_auth_profile(&id)
+    }
+
+    pub fn update_auth_profile(
+        &self,
+        id: &str,
+        input: &AuthProfileInput,
+    ) -> AppResult<AuthProfile> {
+        let existing = self.get_auth_profile(id)?;
+        let has_password = match input.password.as_deref() {
+            Some(value) if !value.is_empty() => true,
+            Some(_) => false,
+            None => existing.has_password,
+        };
+        let has_key_passphrase = match input.key_passphrase.as_deref() {
+            Some(value) if !value.is_empty() => true,
+            Some(_) => false,
+            None => existing.has_key_passphrase,
+        };
+        self.connection()?.execute(
+            "UPDATE auth_profiles SET name = ?2, auth_method = ?3, private_key_path = ?4,
+                has_password = ?5, has_key_passphrase = ?6, updated_at = ?7 WHERE id = ?1",
+            params![
+                id,
+                input.name.trim(),
+                auth_name(&input.auth_method),
+                clean(input.private_key_path.as_deref()),
+                has_password,
+                has_key_passphrase,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        self.get_auth_profile(id)
+    }
+
+    pub fn ensure_auth_profile_deletable(&self, id: &str) -> AppResult<()> {
+        let connection = self.connection()?;
+        let groups = connection.query_row(
+            "SELECT COUNT(*) FROM server_groups WHERE auth_profile_id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let servers = connection.query_row(
+            "SELECT COUNT(*) FROM servers WHERE auth_profile_id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if groups > 0 || servers > 0 {
+            return Err(AppError::Message(format!(
+                "这个认证身份仍被 {groups} 个分组和 {servers} 台 VPS 使用"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn delete_auth_profile(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM auth_profiles WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn list_server_groups(&self) -> AppResult<Vec<ServerGroup>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, jump_server_id, auth_profile_id, default_port, default_username, created_at, updated_at
+             FROM server_groups ORDER BY name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([], row_to_server_group)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_server_group_by_name(&self, name: &str) -> AppResult<ServerGroup> {
+        self.connection()?
+            .query_row(
+                "SELECT id, name, jump_server_id, auth_profile_id, default_port, default_username, created_at, updated_at
+                 FROM server_groups WHERE name = ?1 COLLATE NOCASE",
+                [name],
+                row_to_server_group,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => AppError::Message("所选分组还没有默认连接设置".into()),
+                other => other.into(),
+            })
+    }
+
+    pub fn create_server_group(&self, input: &ServerGroupInput) -> AppResult<ServerGroup> {
+        validate_group(self, input)?;
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.connection()?.execute(
+            "INSERT INTO server_groups (
+                id, name, jump_server_id, auth_profile_id, default_port, default_username, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                input.name.trim(),
+                clean(input.jump_server_id.as_deref()),
+                clean(input.auth_profile_id.as_deref()),
+                input.default_port,
+                clean(input.default_username.as_deref()),
+                now,
+                now,
+            ],
+        ).map_err(unique_group_error)?;
+        self.get_server_group_by_name(input.name.trim())
+    }
+
+    pub fn update_server_group(
+        &self,
+        id: &str,
+        input: &ServerGroupInput,
+    ) -> AppResult<ServerGroup> {
+        validate_group(self, input)?;
+        self.connection()?
+            .execute(
+                "UPDATE server_groups SET name = ?2, jump_server_id = ?3, auth_profile_id = ?4,
+                default_port = ?5, default_username = ?6, updated_at = ?7 WHERE id = ?1",
+                params![
+                    id,
+                    input.name.trim(),
+                    clean(input.jump_server_id.as_deref()),
+                    clean(input.auth_profile_id.as_deref()),
+                    input.default_port,
+                    clean(input.default_username.as_deref()),
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .map_err(unique_group_error)?;
+        self.get_server_group_by_name(input.name.trim())
+    }
+
+    pub fn delete_server_group(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM server_groups WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -2239,6 +2596,56 @@ fn forward_kind(kind: crate::models::PortForwardKind) -> &'static str {
     }
 }
 
+fn cloud_provider_name(provider: CloudProvider) -> &'static str {
+    match provider {
+        CloudProvider::DigitalOcean => "digital_ocean",
+        CloudProvider::Tailscale => "tailscale",
+    }
+}
+
+fn unique_group_error(error: rusqlite::Error) -> AppError {
+    match &error {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            AppError::Message("分组名称已存在".into())
+        }
+        _ => error.into(),
+    }
+}
+
+fn validate_group(db: &Database, input: &ServerGroupInput) -> AppResult<()> {
+    if input.name.trim().is_empty() || input.name.chars().count() > 80 {
+        return Err(AppError::Message(
+            "分组名称不能为空且不能超过 80 个字符".into(),
+        ));
+    }
+    if let Some(port) = input.default_port {
+        if port == 0 {
+            return Err(AppError::Message(
+                "默认 SSH 端口必须在 1 到 65535 之间".into(),
+            ));
+        }
+    }
+    if let Some(jump_id) = input
+        .jump_server_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        db.get_server(jump_id)?;
+    }
+    if let Some(profile_id) = input
+        .auth_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        db.get_auth_profile(profile_id)?;
+    }
+    Ok(())
+}
+
 fn auth_name(method: &crate::models::AuthMethod) -> &'static str {
     match method {
         crate::models::AuthMethod::Password => "password",
@@ -2365,6 +2772,44 @@ fn row_to_data_protection_run(row: &Row<'_>) -> rusqlite::Result<DataProtectionR
     })
 }
 
+fn row_to_cloud_account(row: &Row<'_>) -> rusqlite::Result<CloudAccount> {
+    Ok(CloudAccount {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        provider: parse_enum(&row.get::<_, String>(2)?)?,
+        has_token: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+        last_synced_at: row.get(6)?,
+    })
+}
+
+fn row_to_auth_profile(row: &Row<'_>) -> rusqlite::Result<AuthProfile> {
+    Ok(AuthProfile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        auth_method: parse_enum(&row.get::<_, String>(2)?)?,
+        private_key_path: row.get(3)?,
+        has_password: row.get(4)?,
+        has_key_passphrase: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn row_to_server_group(row: &Row<'_>) -> rusqlite::Result<ServerGroup> {
+    Ok(ServerGroup {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        jump_server_id: row.get(2)?,
+        auth_profile_id: row.get(3)?,
+        default_port: row.get(4)?,
+        default_username: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
 fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
     let method: String = row.get(5)?;
     let tags: String = row.get(8)?;
@@ -2386,10 +2831,13 @@ fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {
         currency: row.get(13)?,
         expires_at: row.get(14)?,
         jump_server_id: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
-        has_password: row.get(18)?,
-        has_key_passphrase: row.get(19)?,
+        auth_profile_id: row.get(16)?,
+        cloud_account_id: row.get(17)?,
+        cloud_resource_id: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+        has_password: row.get(21)?,
+        has_key_passphrase: row.get(22)?,
     })
 }
 

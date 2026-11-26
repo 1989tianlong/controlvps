@@ -196,11 +196,13 @@ fn build_jobs(db: &Database, ids: &[String]) -> AppResult<Vec<ConnectionJob>> {
 }
 
 pub fn connection_job(db: &Database, id: &str) -> AppResult<ConnectionJob> {
-    let server = db.get_server(id)?;
-    let credentials = ssh::load_credentials(&server)?;
-    let jump_host = match server.jump_server_id.as_deref() {
+    let mut server = db.get_server(id)?;
+    let mut credentials = ssh::load_credentials(&server)?;
+    apply_group_defaults(db, &mut server, &mut credentials)?;
+    let jump_id = inherited_jump_id(db, &server)?;
+    let jump_host = match jump_id {
         Some(jump_id) => {
-            let jump_server = db.get_server(jump_id)?;
+            let jump_server = db.get_server(&jump_id)?;
             Some(ssh::JumpHost {
                 credentials: ssh::load_credentials(&jump_server)?,
                 server: jump_server,
@@ -213,6 +215,44 @@ pub fn connection_job(db: &Database, id: &str) -> AppResult<ConnectionJob> {
         credentials,
         jump_host,
     })
+}
+
+fn apply_group_defaults(
+    db: &Database,
+    server: &mut crate::models::Server,
+    credentials: &mut ssh::Credentials,
+) -> AppResult<()> {
+    let Some(group_name) = server.group_name.as_deref() else {
+        return Ok(());
+    };
+    let Ok(group) = db.get_server_group_by_name(group_name) else {
+        return Ok(());
+    };
+    if server.auth_profile_id.is_none() {
+        server.auth_profile_id = group.auth_profile_id.clone();
+    }
+    if let Some(profile_id) = server.auth_profile_id.as_deref() {
+        let profile = db.get_auth_profile(profile_id)?;
+        server.auth_method = profile.auth_method;
+        server.private_key_path = profile.private_key_path;
+        credentials.password = ssh::profile_secret(&profile.id, "password")?;
+        credentials.key_passphrase = ssh::profile_secret(&profile.id, "key-passphrase")?;
+    }
+    Ok(())
+}
+
+fn inherited_jump_id(db: &Database, server: &crate::models::Server) -> AppResult<Option<String>> {
+    if let Some(jump_id) = server.jump_server_id.clone() {
+        return Ok(Some(jump_id));
+    }
+    let Some(group_name) = server.group_name.as_deref() else {
+        return Ok(None);
+    };
+    Ok(db
+        .get_server_group_by_name(group_name)
+        .ok()
+        .and_then(|group| group.jump_server_id)
+        .filter(|jump_id| jump_id != &server.id))
 }
 
 fn validate_request(request: &RunbookExecutionRequest) -> AppResult<()> {

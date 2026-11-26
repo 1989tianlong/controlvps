@@ -23,6 +23,112 @@ export interface ServerInput {
   currency?: string;
   expiresAt?: string;
   jumpServerId?: string;
+  authProfileId?: string;
+  cloudAccountId?: string;
+  cloudResourceId?: string;
+}
+
+export type CloudProvider = "digital_ocean" | "tailscale";
+
+export interface CloudAccountInput {
+  name: string;
+  provider: CloudProvider;
+  token?: string;
+}
+
+export interface CloudAccount {
+  id: string;
+  name: string;
+  provider: CloudProvider;
+  hasToken: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastSyncedAt?: string;
+}
+
+export interface AuthProfileInput {
+  name: string;
+  authMethod: AuthMethod;
+  privateKeyPath?: string;
+  password?: string;
+  keyPassphrase?: string;
+}
+
+export interface AuthProfile {
+  id: string;
+  name: string;
+  authMethod: AuthMethod;
+  privateKeyPath?: string;
+  hasPassword: boolean;
+  hasKeyPassphrase: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServerGroupInput {
+  name: string;
+  jumpServerId?: string;
+  authProfileId?: string;
+  defaultPort?: number;
+  defaultUsername?: string;
+}
+
+export interface ServerGroup {
+  id: string;
+  name: string;
+  jumpServerId?: string;
+  authProfileId?: string;
+  defaultPort?: number;
+  defaultUsername?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CloudChangeKind = "added" | "changed" | "missing";
+
+export interface CloudResource {
+  provider: CloudProvider;
+  resourceId: string;
+  name: string;
+  host: string;
+  region?: string;
+  status: string;
+  tags: string[];
+  detail: string;
+}
+
+export interface CloudChange {
+  kind: CloudChangeKind;
+  resource: CloudResource;
+  serverId?: string;
+  summary: string;
+}
+
+export interface CloudPreview {
+  accountId: string;
+  provider: CloudProvider;
+  fetchedAt: string;
+  added: number;
+  changed: number;
+  missing: number;
+  unchanged: number;
+  changes: CloudChange[];
+}
+
+export interface CloudImportRequest {
+  accountId: string;
+  resourceIds: string[];
+  groupName?: string;
+  username?: string;
+  port?: number;
+  authProfileId?: string;
+  jumpServerId?: string;
+}
+
+export interface CloudImportResult {
+  created: number;
+  updated: number;
+  skipped: number;
 }
 
 export interface Server extends Omit<ServerInput, "password" | "keyPassphrase"> {

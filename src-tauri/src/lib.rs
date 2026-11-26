@@ -1,4 +1,5 @@
 mod alerts;
+mod assets;
 mod backup;
 mod batch;
 mod commands;
@@ -76,6 +77,20 @@ pub fn run() {
             commands::list_data_protection_snapshots,
             commands::restore_data_protection_snapshot,
             commands::list_data_protection_runs,
+            commands::list_cloud_accounts,
+            commands::create_cloud_account,
+            commands::update_cloud_account,
+            commands::delete_cloud_account,
+            commands::preview_cloud_assets,
+            commands::import_cloud_assets,
+            commands::list_auth_profiles,
+            commands::create_auth_profile,
+            commands::update_auth_profile,
+            commands::delete_auth_profile,
+            commands::list_server_groups,
+            commands::create_server_group,
+            commands::update_server_group,
+            commands::delete_server_group,
             commands::list_servers,
             commands::create_server,
             commands::import_ssh_config,
