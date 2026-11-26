@@ -16,15 +16,18 @@ use crate::models::{
     ActionResult, AlertEvent, AuthMethod, BackupPreview, BackupRestoreResult, BackupSummary,
     BatchResult, ComposeAction, ComposeActionResult, ComposeApplication, ComposeDeploymentHistory,
     ComposeDeploymentPlan, ComposeDeploymentResult, ComposeEditInput, ComposeLogs, ComposeOverview,
-    ConnectionReport, ConnectionTest, DockerAction, DockerActionResult, DockerLogs, DockerOverview,
-    FileListing, FileTransfer, FileTransferKind, FileTransferTask, MetricSample,
-    MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook,
-    RunbookInput, RunbookResult, SecurityReport, Server, ServerInput, ServerMetrics,
-    ServiceCheckResult, ServiceEvent, ServiceMonitorInput, ServiceMonitorView,
-    ServiceNotificationInput, ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput,
-    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
-    TerminalSession, TunnelStatus,
+    ConnectionReport, ConnectionTest, DataProtectionInput, DataProtectionOverview,
+    DataProtectionPolicy, DataProtectionRestoreResult, DataProtectionRun, DockerAction,
+    DockerActionResult, DockerLogs, DockerOverview, FileListing, FileTransfer, FileTransferKind,
+    FileTransferTask, MetricSample, MonitoringSettings, OperationLog, PortForwardInput,
+    PortForwardRule, QuickAction, Runbook, RunbookExecution, RunbookExecutionRequest, RunbookInput,
+    RunbookResult, RunbookSchedule, RunbookScheduleInput, RunbookTrigger, SecurityReport, Server,
+    ServerInput, ServerMetrics, ServiceCheckResult, ServiceEvent, ServiceMonitorInput,
+    ServiceMonitorView, ServiceNotificationInput, ServiceNotificationSettings, ServiceSample,
+    Snippet, SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs,
+    SystemdOverview, TerminalSession, TunnelStatus,
 };
+use crate::runbook::RunbookExecutionRegistry;
 use crate::security;
 use crate::service_monitor::{self, ServiceMonitorRegistry};
 use crate::ssh;
@@ -97,6 +100,136 @@ pub async fn restore_encrypted_backup(
     let database = db.inner().clone();
     run_blocking(move || crate::backup::restore(&database, std::path::Path::new(&path), &password))
         .await
+}
+
+#[tauri::command]
+pub async fn get_data_protection_overview(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<DataProtectionOverview> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        crate::data_protection::overview(&database, &id, &known_hosts, allow_unknown_host)
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn create_data_protection_policy(
+    db: State<'_, Database>,
+    id: String,
+    input: DataProtectionInput,
+) -> CommandResult<DataProtectionPolicy> {
+    crate::data_protection::create_policy(&db, &id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_data_protection_policy(
+    db: State<'_, Database>,
+    id: String,
+    input: DataProtectionInput,
+) -> CommandResult<DataProtectionPolicy> {
+    crate::data_protection::update_policy(&db, &id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_data_protection_policy(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    crate::data_protection::delete_policy(&db, &id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn initialize_data_protection(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<DataProtectionRun> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        crate::data_protection::initialize(&database, &id, &known_hosts, allow_unknown_host)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn check_data_protection(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<DataProtectionRun> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        crate::data_protection::check(&database, &id, &known_hosts, allow_unknown_host)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_data_protection_backup(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<DataProtectionRun> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        crate::data_protection::backup(&database, &id, &known_hosts, allow_unknown_host)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_data_protection_snapshots(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<Vec<crate::models::ResticSnapshot>> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        crate::data_protection::snapshots(&database, &id, &known_hosts, allow_unknown_host)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn restore_data_protection_snapshot(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    snapshot_id: String,
+    target: Option<String>,
+    allow_unknown_host: bool,
+) -> CommandResult<DataProtectionRestoreResult> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        crate::data_protection::restore(
+            &database,
+            &id,
+            &snapshot_id,
+            target.as_deref(),
+            &known_hosts,
+            allow_unknown_host,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn list_data_protection_runs(
+    db: State<'_, Database>,
+    id: String,
+) -> CommandResult<Vec<DataProtectionRun>> {
+    db.list_data_protection_runs(&id).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -219,6 +352,7 @@ pub fn delete_server(
         .map_err(CommandError::from)?;
     tunnels.stop_by_server(&id).map_err(CommandError::from)?;
     ssh::delete_credentials(&id).map_err(CommandError::from)?;
+    crate::data_protection::delete_server_secrets(&db, &id);
     db.delete_server(&id).map_err(Into::into)
 }
 
@@ -1018,6 +1152,157 @@ pub fn update_runbook(
 #[tauri::command]
 pub fn delete_runbook(db: State<'_, Database>, id: String) -> CommandResult<()> {
     db.delete_runbook(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn start_runbook_execution(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    registry: State<'_, RunbookExecutionRegistry>,
+    id: String,
+    ids: Vec<String>,
+    concurrency: usize,
+    canary_count: usize,
+    timeout_seconds: u64,
+) -> CommandResult<RunbookExecution> {
+    let runbook = db.get_runbook(&id).map_err(CommandError::from)?;
+    let request = RunbookExecutionRequest {
+        runbook,
+        target_ids: ids,
+        concurrency,
+        canary_count,
+        timeout_seconds,
+        trigger: RunbookTrigger::Manual,
+        schedule_id: None,
+        retry_of: None,
+    };
+    crate::runbook::start_execution(
+        db.inner().clone(),
+        paths.known_hosts.clone(),
+        registry.inner().clone(),
+        request,
+    )
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_runbook_execution(
+    db: State<'_, Database>,
+    id: String,
+) -> CommandResult<RunbookExecution> {
+    db.get_runbook_execution(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_runbook_executions(
+    db: State<'_, Database>,
+    runbook_id: Option<String>,
+) -> CommandResult<Vec<RunbookExecution>> {
+    db.list_runbook_executions(runbook_id.as_deref())
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn cancel_runbook_execution(
+    db: State<'_, Database>,
+    registry: State<'_, RunbookExecutionRegistry>,
+    id: String,
+) -> CommandResult<RunbookExecution> {
+    registry.cancel(&id).map_err(CommandError::from)?;
+    db.get_runbook_execution(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn retry_runbook_execution(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    registry: State<'_, RunbookExecutionRegistry>,
+    id: String,
+) -> CommandResult<RunbookExecution> {
+    let request = db.runbook_retry_request(&id).map_err(CommandError::from)?;
+    crate::runbook::start_execution(
+        db.inner().clone(),
+        paths.known_hosts.clone(),
+        registry.inner().clone(),
+        request,
+    )
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_runbook_schedules(db: State<'_, Database>) -> CommandResult<Vec<RunbookSchedule>> {
+    db.list_runbook_schedules().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_runbook_schedule(
+    db: State<'_, Database>,
+    input: RunbookScheduleInput,
+) -> CommandResult<RunbookSchedule> {
+    db.create_runbook_schedule(&input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_runbook_schedule(
+    db: State<'_, Database>,
+    id: String,
+    input: RunbookScheduleInput,
+) -> CommandResult<RunbookSchedule> {
+    db.update_runbook_schedule(&id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn set_runbook_schedule_enabled(
+    db: State<'_, Database>,
+    id: String,
+    enabled: bool,
+) -> CommandResult<RunbookSchedule> {
+    db.set_runbook_schedule_enabled(&id, enabled)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_runbook_schedule(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    db.delete_runbook_schedule(&id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn run_runbook_schedule_now(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    registry: State<'_, RunbookExecutionRegistry>,
+    id: String,
+) -> CommandResult<RunbookExecution> {
+    let schedule = db.get_runbook_schedule(&id).map_err(CommandError::from)?;
+    if schedule
+        .last_execution_id
+        .as_deref()
+        .is_some_and(|execution_id| registry.contains(execution_id))
+    {
+        return Err(AppError::Message("上一次执行仍未结束，不能重复启动".into()).into());
+    }
+    let request = RunbookExecutionRequest {
+        runbook: db
+            .get_runbook(&schedule.runbook_id)
+            .map_err(CommandError::from)?,
+        target_ids: schedule.server_ids,
+        concurrency: schedule.concurrency,
+        canary_count: schedule.canary_count,
+        timeout_seconds: schedule.timeout_seconds,
+        trigger: RunbookTrigger::Scheduled,
+        schedule_id: Some(schedule.id.clone()),
+        retry_of: None,
+    };
+    let execution = crate::runbook::start_execution(
+        db.inner().clone(),
+        paths.known_hosts.clone(),
+        registry.inner().clone(),
+        request,
+    )
+    .map_err(CommandError::from)?;
+    db.mark_runbook_schedule_started(&id, &execution.id)
+        .map_err(CommandError::from)?;
+    Ok(execution)
 }
 
 #[tauri::command]

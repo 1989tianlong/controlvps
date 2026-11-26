@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, BookOpenCheck, CheckCircle2, ChevronRight, Play, Plus, Save, Search, Server as ServerIcon, ShieldAlert, Trash2, X, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpenCheck, CheckCircle2, ChevronRight, Play, Plus, Save, Search, Server as ServerIcon, ShieldAlert, Square, Trash2, X, XCircle } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
-import type { Runbook, RunbookInput, RunbookResult, Server, TrustedExecutor } from "../types";
+import type { Runbook, RunbookExecution, RunbookInput, RunbookResult, Server, TrustedExecutor } from "../types";
 
 const emptyDraft: RunbookInput = {
   name: "",
@@ -23,6 +23,8 @@ export function RunbookManager({ servers, trusted, onAdd }: Props) {
   const [query, setQuery] = useState("");
   const [concurrency, setConcurrency] = useState(2);
   const [canaryCount, setCanaryCount] = useState(0);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(300);
+  const [execution, setExecution] = useState<RunbookExecution>();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState("");
@@ -47,6 +49,28 @@ export function RunbookManager({ servers, trusted, onAdd }: Props) {
   useEffect(() => {
     setSelectedIds((current) => new Set([...current].filter((id) => servers.some((server) => server.id === id))));
   }, [servers]);
+  useEffect(() => {
+    if (!execution || !["queued", "running"].includes(execution.status)) return;
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void api.runbookExecution(execution.id).then((current) => {
+        if (disposed) return;
+        setExecution(current);
+        if (!["queued", "running"].includes(current.status)) {
+          setResult(current.result);
+          setBusy(false);
+          setPhase("");
+          setNotice(`执行已结束：${current.successCount} 台成功，${current.failureCount} 台失败${current.skippedCount ? `，${current.skippedCount} 台未执行` : ""}。完整记录已保存到“计划与历史”。`);
+        }
+      }).catch((reason) => {
+        if (disposed) return;
+        setBusy(false);
+        setPhase("");
+        setError(`执行状态读取失败：${errorMessage(reason)}。后台任务可能仍在运行，请到“计划与历史”核对。`);
+      });
+    }, 800);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [execution]);
 
   const selected = runbooks.find((runbook) => runbook.id === selectedId);
   const targets = useMemo(() => servers.filter((server) => selectedIds.has(server.id)), [servers, selectedIds]);
@@ -132,17 +156,23 @@ export function RunbookManager({ servers, trusted, onAdd }: Props) {
         ? `先灰度 ${effectiveCanary} 台；全部通过后，再以最多 ${concurrency} 台并行执行后续批次`
         : `正在执行 ${draft.steps.length} 个步骤，最多 ${concurrency} 台并行`);
       executionStarted = true;
-      const output = await api.runRunbook(selectedId, runTargets.map((server) => server.id), concurrency, effectiveCanary);
-      setResult(output);
-      setNotice(`Runbook 执行完成：${output.successCount} 台成功，${output.failureCount} 台失败${output.skippedCount > 0 ? `，灰度失败已阻止 ${output.skippedCount} 台后续目标` : ""}`);
+      const started = await api.startRunbookExecution(selectedId, runTargets.map((server) => server.id), concurrency, effectiveCanary, timeoutSeconds);
+      setExecution(started);
+      setPhase(`后台任务 ${started.id.slice(0, 8)} 正在执行；可取消或切换到“计划与历史”查看`);
+      setNotice("任务已启动，执行结果会持久化保存");
     } catch (reason) {
       setError(executionStarted
-        ? `Runbook 接口失败：${errorMessage(reason)}。部分步骤可能已经执行，请核对操作记录和服务器状态。`
+        ? `Runbook 启动失败：${errorMessage(reason)}。请到“计划与历史”核对是否已创建任务。`
         : `主机身份验证失败：${errorMessage(reason)}。未执行任何 Runbook 步骤。`);
-    } finally {
       setPhase("");
       setBusy(false);
     }
+  };
+  const cancel = async () => {
+    if (!execution || !window.confirm("确认取消当前任务？SSH 通道会关闭，远端进程是否立即停止需要人工核对。")) return;
+    setError("");
+    try { setExecution(await api.cancelRunbookExecution(execution.id)); setNotice("取消请求已发送，正在等待执行状态落盘"); }
+    catch (reason) { setError(errorMessage(reason)); }
   };
 
   return <>
@@ -163,13 +193,13 @@ export function RunbookManager({ servers, trusted, onAdd }: Props) {
           </div>
         </section>
         <section className="panel target-panel">
-          <div className="panel-header"><div><h2>执行目标</h2><span className="table-meta">已选择 {targets.length} / {servers.length} 台{selectedId && dirty ? " · 有未保存修改" : ""}</span></div><div className="heading-actions"><select className="select" aria-label="Runbook 灰度首批数量" value={targets.length > 1 ? Math.min(canaryCount, targets.length - 1) : 0} disabled={busy || targets.length < 2} onChange={(event) => setCanaryCount(Number(event.target.value))}><option value={0}>不灰度</option><option value={1}>首批灰度 1 台</option><option value={2}>首批灰度 2 台</option><option value={3}>首批灰度 3 台</option></select><select className="select" aria-label="Runbook 并发数" value={concurrency} disabled={busy} onChange={(event) => setConcurrency(Number(event.target.value))}><option value={1}>1 台并行</option><option value={2}>2 台并行</option><option value={3}>3 台并行</option><option value={5}>5 台并行</option></select><button className="btn btn-primary" type="button" disabled={busy || !selectedId || dirty || targets.length === 0} title={dirty ? "请先保存 Runbook 修改" : undefined} onClick={openReview}><Play size={15} />审查并执行</button></div></div>
+          <div className="panel-header"><div><h2>执行目标</h2><span className="table-meta">已选择 {targets.length} / {servers.length} 台{selectedId && dirty ? " · 有未保存修改" : ""}</span></div><div className="heading-actions"><select className="select" aria-label="Runbook 灰度首批数量" value={targets.length > 1 ? Math.min(canaryCount, targets.length - 1) : 0} disabled={busy || targets.length < 2} onChange={(event) => setCanaryCount(Number(event.target.value))}><option value={0}>不灰度</option><option value={1}>首批灰度 1 台</option><option value={2}>首批灰度 2 台</option><option value={3}>首批灰度 3 台</option></select><select className="select" aria-label="Runbook 并发数" value={concurrency} disabled={busy} onChange={(event) => setConcurrency(Number(event.target.value))}><option value={1}>1 台并行</option><option value={2}>2 台并行</option><option value={3}>3 台并行</option><option value={5}>5 台并行</option></select><select className="select" aria-label="Runbook 单步超时" value={timeoutSeconds} disabled={busy} onChange={(event) => setTimeoutSeconds(Number(event.target.value))}><option value={30}>单步 30 秒</option><option value={300}>单步 5 分钟</option><option value={3600}>单步 1 小时</option></select><button className="btn btn-primary" type="button" disabled={busy || !selectedId || dirty || targets.length === 0} title={dirty ? "请先保存 Runbook 修改" : undefined} onClick={openReview}><Play size={15} />审查并执行</button></div></div>
           <div className="target-filter"><div className="search-wrap"><Search size={16} /><input className="input" type="search" aria-label="搜索 Runbook 执行目标" placeholder="搜索名称、地址或分组" value={query} onChange={(event) => setQuery(event.target.value)} /></div></div>
           {servers.length === 0 ? <div className="empty"><div><ServerIcon size={28} /><h2>先添加 VPS</h2><p>添加服务器后即可执行 Runbook。</p><button className="btn btn-primary" type="button" onClick={onAdd}>添加 VPS</button></div></div> : <div className="target-list">{filtered.map((server) => <label className="target-item" key={server.id}><input type="checkbox" checked={selectedIds.has(server.id)} disabled={busy} onChange={() => toggle(server.id)} /><span><strong>{server.name}</strong><small>{server.username}@{server.host}:{server.port}</small></span><span className="badge">{server.groupName || "未分组"}</span></label>)}</div>}
         </section>
       </div>
     </div>
-    {phase && <div className="file-progress automation-phase" role="status">{phase}</div>}
+    {phase && <div className="file-progress automation-phase" role="status"><span>{phase}</span>{execution && busy && <button className="btn btn-danger" type="button" onClick={() => void cancel()}><Square size={14} />取消</button>}</div>}
     {result && <section className="batch-results"><div className="page-heading"><div><h2>{result.runbookName} · 执行结果</h2><p>{result.successCount} 台成功，{result.failureCount} 台失败{result.skippedCount > 0 ? `，${result.skippedCount} 台因灰度失败未执行` : ""}，总耗时 {result.durationMs} ms。失败服务器的未执行步骤已跳过。</p></div></div>{result.results.map((server) => <article className="panel batch-result" key={server.serverId}><div className="panel-header"><div className="batch-result-title">{server.success ? <CheckCircle2 size={19} /> : <XCircle size={19} />}<div><h3>{server.serverName}</h3><span className="table-meta">已执行 {server.steps.length} / {draft.steps.length} 步 · {server.durationMs} ms</span></div></div><span className={server.success ? "badge badge-ok" : "badge badge-bad"}>{server.success ? "完成" : "未完成"}</span></div>{server.error && <div className="error-banner m-4" role="alert">{server.error}</div>}<div className="runbook-results">{server.steps.map((step, index) => <details key={step.stepId} open={!step.success}><summary><span>{index + 1}. {step.stepName}</span><span className={step.success ? "badge badge-ok" : "badge badge-bad"}>{step.exitCode === null ? "执行失败" : `退出码 ${step.exitCode}`}</span></summary>{step.error && <p className="runbook-step-error">{step.error}</p>}{step.output && <pre className="action-output"><code>{step.output}</code></pre>}<details className="batch-command"><summary>查看实际命令</summary><pre><code>{step.command}</code></pre></details></details>)}</div></article>)}</section>}
     <dialog ref={reviewRef} className="dialog batch-review" onCancel={(event) => { event.preventDefault(); if (!busy) setReviewOpen(false); }}>
       <div className="dialog-header"><h2>审查 Runbook</h2><button className="icon-btn" type="button" aria-label="关闭" onClick={() => setReviewOpen(false)}><X size={18} /></button></div>

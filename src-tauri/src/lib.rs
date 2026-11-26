@@ -3,6 +3,7 @@ mod backup;
 mod batch;
 mod commands;
 mod compose;
+mod data_protection;
 mod db;
 mod docker;
 mod error;
@@ -10,6 +11,7 @@ mod files;
 mod metrics;
 mod models;
 mod runbook;
+mod scheduler;
 mod security;
 mod service_monitor;
 mod ssh;
@@ -22,6 +24,8 @@ mod tunnel;
 use alerts::AlertRegistry;
 use commands::AppPaths;
 use db::Database;
+use runbook::RunbookExecutionRegistry;
+use scheduler::RunbookScheduler;
 use service_monitor::ServiceMonitorRegistry;
 use tauri::Manager;
 use terminal::TerminalRegistry;
@@ -39,15 +43,22 @@ pub fn run() {
         .manage(ServiceMonitorRegistry::default())
         .manage(TransferRegistry::default())
         .manage(TunnelRegistry::default())
+        .manage(RunbookExecutionRegistry::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let database = Database::new(&data_dir.join("controlvps.sqlite3"))?;
-            app.manage(database);
-            app.manage(AppPaths {
+            let paths = AppPaths {
                 known_hosts: data_dir.join("known_hosts"),
                 data_dir,
-            });
+            };
+            app.manage(RunbookScheduler::start(
+                database.clone(),
+                &paths,
+                app.state::<RunbookExecutionRegistry>().inner().clone(),
+            ));
+            app.manage(database);
+            app.manage(paths);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,6 +66,16 @@ pub fn run() {
             commands::create_encrypted_backup,
             commands::preview_encrypted_backup,
             commands::restore_encrypted_backup,
+            commands::get_data_protection_overview,
+            commands::create_data_protection_policy,
+            commands::update_data_protection_policy,
+            commands::delete_data_protection_policy,
+            commands::initialize_data_protection,
+            commands::check_data_protection,
+            commands::run_data_protection_backup,
+            commands::list_data_protection_snapshots,
+            commands::restore_data_protection_snapshot,
+            commands::list_data_protection_runs,
             commands::list_servers,
             commands::create_server,
             commands::import_ssh_config,
@@ -105,6 +126,17 @@ pub fn run() {
             commands::update_runbook,
             commands::delete_runbook,
             commands::run_runbook,
+            commands::start_runbook_execution,
+            commands::get_runbook_execution,
+            commands::list_runbook_executions,
+            commands::cancel_runbook_execution,
+            commands::retry_runbook_execution,
+            commands::list_runbook_schedules,
+            commands::create_runbook_schedule,
+            commands::update_runbook_schedule,
+            commands::set_runbook_schedule_enabled,
+            commands::delete_runbook_schedule,
+            commands::run_runbook_schedule_now,
             commands::run_batch_command,
             commands::list_port_forwards,
             commands::create_port_forward,

@@ -483,7 +483,16 @@ pub struct Runbook {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunbookStepOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunbookStepResult {
     pub step_id: String,
@@ -492,11 +501,12 @@ pub struct RunbookStepResult {
     pub output: String,
     pub exit_code: Option<i32>,
     pub success: bool,
+    pub outcome: RunbookStepOutcome,
     pub error: Option<String>,
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunbookServerResult {
     pub server_id: String,
@@ -507,7 +517,7 @@ pub struct RunbookServerResult {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunbookResult {
     pub runbook_name: String,
@@ -516,6 +526,95 @@ pub struct RunbookResult {
     pub failure_count: usize,
     pub skipped_count: usize,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunbookTrigger {
+    Manual,
+    Scheduled,
+    Retry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunbookExecutionStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Partial,
+    Cancelled,
+    TimedOut,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookExecution {
+    pub id: String,
+    pub runbook_id: String,
+    pub runbook_name: String,
+    pub schedule_id: Option<String>,
+    pub retry_of: Option<String>,
+    pub trigger: RunbookTrigger,
+    pub status: RunbookExecutionStatus,
+    pub target_ids: Vec<String>,
+    pub concurrency: usize,
+    pub canary_count: usize,
+    pub timeout_seconds: u64,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub skipped_count: usize,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub result: Option<RunbookResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookScheduleInput {
+    pub runbook_id: String,
+    pub server_ids: Vec<String>,
+    pub interval_minutes: u32,
+    pub enabled: bool,
+    pub concurrency: usize,
+    pub canary_count: usize,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunbookSchedule {
+    pub id: String,
+    pub runbook_id: String,
+    pub runbook_name: String,
+    pub server_ids: Vec<String>,
+    pub interval_minutes: u32,
+    pub enabled: bool,
+    pub concurrency: usize,
+    pub canary_count: usize,
+    pub timeout_seconds: u64,
+    pub next_run_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub last_execution_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunbookExecutionRequest {
+    pub runbook: Runbook,
+    pub target_ids: Vec<String>,
+    pub concurrency: usize,
+    pub canary_count: usize,
+    pub timeout_seconds: u64,
+    pub trigger: RunbookTrigger,
+    pub schedule_id: Option<String>,
+    pub retry_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -937,6 +1036,123 @@ pub struct SecurityReport {
     pub findings: Vec<SecurityFinding>,
     pub warnings: Vec<String>,
     pub collected_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResticRepositoryKind {
+    Local,
+    S3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectionSourceKind {
+    Directory,
+    DockerVolume,
+    Postgresql,
+    Mysql,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataProtectionInput {
+    pub name: String,
+    pub repository_kind: ResticRepositoryKind,
+    pub repository: String,
+    pub repository_password: Option<String>,
+    pub s3_access_key_id: Option<String>,
+    pub s3_secret_access_key: Option<String>,
+    pub source_kind: ProtectionSourceKind,
+    pub paths: Vec<String>,
+    pub volume_name: Option<String>,
+    pub database_container: Option<String>,
+    pub database_name: Option<String>,
+    pub database_user: Option<String>,
+    pub database_password: Option<String>,
+    pub keep_last: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataProtectionPolicy {
+    pub id: String,
+    pub server_id: String,
+    pub name: String,
+    pub repository_kind: ResticRepositoryKind,
+    pub repository: String,
+    pub source_kind: ProtectionSourceKind,
+    pub paths: Vec<String>,
+    pub volume_name: Option<String>,
+    pub database_container: Option<String>,
+    pub database_name: Option<String>,
+    pub database_user: Option<String>,
+    pub keep_last: u32,
+    pub has_repository_password: bool,
+    pub has_s3_credentials: bool,
+    pub has_database_password: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataProtectionAction {
+    Initialize,
+    Check,
+    Backup,
+    Restore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataProtectionRunStatus {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataProtectionRun {
+    pub id: String,
+    pub policy_id: String,
+    pub action: DataProtectionAction,
+    pub status: DataProtectionRunStatus,
+    pub snapshot_id: Option<String>,
+    pub target: Option<String>,
+    pub output: String,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResticSnapshot {
+    pub id: String,
+    #[serde(alias = "short_id")]
+    pub short_id: String,
+    pub time: String,
+    pub hostname: String,
+    pub paths: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataProtectionOverview {
+    pub restic_version: String,
+    pub policies: Vec<DataProtectionPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataProtectionRestoreResult {
+    pub snapshot_id: String,
+    pub target: String,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

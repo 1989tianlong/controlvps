@@ -6,11 +6,14 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    AlertEvent, AlertKind, AlertStatus, MetricSample, MonitoringSettings, OperationLog,
-    PortForwardInput, PortForwardRule, Runbook, RunbookInput, RunbookStep, Server, ServerInput,
-    ServerMetrics, ServiceEvent, ServiceEventKind, ServiceMonitor, ServiceMonitorInput,
-    ServiceMonitorKind, ServiceMonitorView, ServiceProbe, ServiceSample, Snippet, SnippetInput,
-    WorkspaceBackup,
+    AlertEvent, AlertKind, AlertStatus, DataProtectionAction, DataProtectionInput,
+    DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, MetricSample,
+    MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, ProtectionSourceKind,
+    ResticRepositoryKind, Runbook, RunbookExecution, RunbookExecutionRequest,
+    RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
+    RunbookStep, RunbookTrigger, Server, ServerInput, ServerMetrics, ServiceEvent,
+    ServiceEventKind, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind, ServiceMonitorView,
+    ServiceProbe, ServiceSample, Snippet, SnippetInput, WorkspaceBackup,
 };
 
 #[derive(Clone)]
@@ -156,6 +159,87 @@ impl Database {
              );
              CREATE INDEX IF NOT EXISTS idx_service_events_monitor
              ON service_events(monitor_id, id DESC);
+             CREATE TABLE IF NOT EXISTS runbook_schedules (
+                id TEXT PRIMARY KEY,
+                runbook_id TEXT NOT NULL,
+                server_ids TEXT NOT NULL,
+                interval_minutes INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                concurrency INTEGER NOT NULL DEFAULT 2,
+                canary_count INTEGER NOT NULL DEFAULT 0,
+                timeout_seconds INTEGER NOT NULL DEFAULT 300,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_execution_id TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(runbook_id) REFERENCES runbooks(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_runbook_schedules_due
+             ON runbook_schedules(enabled, next_run_at);
+             CREATE TABLE IF NOT EXISTS runbook_executions (
+                id TEXT PRIMARY KEY,
+                runbook_id TEXT NOT NULL,
+                runbook_name TEXT NOT NULL,
+                runbook_snapshot TEXT NOT NULL,
+                schedule_id TEXT,
+                retry_of TEXT,
+                trigger_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                target_ids TEXT NOT NULL,
+                concurrency INTEGER NOT NULL,
+                canary_count INTEGER NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                result TEXT,
+                error TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_runbook_executions_created
+             ON runbook_executions(created_at DESC);
+             CREATE TABLE IF NOT EXISTS data_protection_policies (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                repository_kind TEXT NOT NULL,
+                repository TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                paths TEXT NOT NULL DEFAULT '[]',
+                volume_name TEXT,
+                database_container TEXT,
+                database_name TEXT,
+                database_user TEXT,
+                keep_last INTEGER NOT NULL DEFAULT 7,
+                has_repository_password INTEGER NOT NULL DEFAULT 0,
+                has_s3_credentials INTEGER NOT NULL DEFAULT 0,
+                has_database_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_data_protection_server
+             ON data_protection_policies(server_id, name);
+             CREATE TABLE IF NOT EXISTS data_protection_runs (
+                id TEXT PRIMARY KEY,
+                policy_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                snapshot_id TEXT,
+                target TEXT,
+                output TEXT NOT NULL DEFAULT '',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(policy_id) REFERENCES data_protection_policies(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_data_protection_runs_policy
+             ON data_protection_runs(policy_id, started_at DESC);
              CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -521,6 +605,594 @@ impl Database {
         self.connection()?
             .execute("DELETE FROM runbooks WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    pub fn list_runbook_schedules(&self) -> AppResult<Vec<RunbookSchedule>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT sc.id, sc.runbook_id, r.name, sc.server_ids, sc.interval_minutes,
+                    sc.enabled, sc.concurrency, sc.canary_count, sc.timeout_seconds,
+                    sc.next_run_at, sc.last_run_at, sc.last_execution_id, sc.last_error,
+                    sc.created_at, sc.updated_at
+             FROM runbook_schedules sc JOIN runbooks r ON r.id = sc.runbook_id
+             ORDER BY r.name COLLATE NOCASE, sc.created_at",
+        )?;
+        let rows = statement.query_map([], row_to_runbook_schedule)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_runbook_schedule(&self, id: &str) -> AppResult<RunbookSchedule> {
+        self.connection()?
+            .query_row(
+                "SELECT sc.id, sc.runbook_id, r.name, sc.server_ids, sc.interval_minutes,
+                        sc.enabled, sc.concurrency, sc.canary_count, sc.timeout_seconds,
+                        sc.next_run_at, sc.last_run_at, sc.last_execution_id, sc.last_error,
+                        sc.created_at, sc.updated_at
+                 FROM runbook_schedules sc JOIN runbooks r ON r.id = sc.runbook_id
+                 WHERE sc.id = ?1",
+                [id],
+                row_to_runbook_schedule,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这个计划任务".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_runbook_schedule(
+        &self,
+        input: &RunbookScheduleInput,
+    ) -> AppResult<RunbookSchedule> {
+        self.validate_runbook_schedule(input)?;
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let next_run_at = input
+            .enabled
+            .then(|| (now + Duration::minutes(input.interval_minutes.into())).to_rfc3339());
+        self.connection()?.execute(
+            "INSERT INTO runbook_schedules (
+                id, runbook_id, server_ids, interval_minutes, enabled, concurrency,
+                canary_count, timeout_seconds, next_run_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                id,
+                input.runbook_id,
+                json_string(&input.server_ids)?,
+                input.interval_minutes,
+                input.enabled,
+                input.concurrency,
+                input.canary_count,
+                input.timeout_seconds,
+                next_run_at,
+                now.to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        )?;
+        self.get_runbook_schedule(&id)
+    }
+
+    pub fn update_runbook_schedule(
+        &self,
+        id: &str,
+        input: &RunbookScheduleInput,
+    ) -> AppResult<RunbookSchedule> {
+        self.get_runbook_schedule(id)?;
+        self.validate_runbook_schedule(input)?;
+        let now = Utc::now();
+        let next_run_at = input
+            .enabled
+            .then(|| (now + Duration::minutes(input.interval_minutes.into())).to_rfc3339());
+        self.connection()?.execute(
+            "UPDATE runbook_schedules SET runbook_id = ?2, server_ids = ?3,
+                interval_minutes = ?4, enabled = ?5, concurrency = ?6,
+                canary_count = ?7, timeout_seconds = ?8, next_run_at = ?9,
+                last_error = NULL, updated_at = ?10
+             WHERE id = ?1",
+            params![
+                id,
+                input.runbook_id,
+                json_string(&input.server_ids)?,
+                input.interval_minutes,
+                input.enabled,
+                input.concurrency,
+                input.canary_count,
+                input.timeout_seconds,
+                next_run_at,
+                now.to_rfc3339(),
+            ],
+        )?;
+        self.get_runbook_schedule(id)
+    }
+
+    pub fn set_runbook_schedule_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> AppResult<RunbookSchedule> {
+        let schedule = self.get_runbook_schedule(id)?;
+        let now = Utc::now();
+        let next_run_at = enabled
+            .then(|| (now + Duration::minutes(schedule.interval_minutes.into())).to_rfc3339());
+        self.connection()?.execute(
+            "UPDATE runbook_schedules SET enabled = ?2, next_run_at = ?3,
+                last_error = NULL, updated_at = ?4 WHERE id = ?1",
+            params![id, enabled, next_run_at, now.to_rfc3339()],
+        )?;
+        self.get_runbook_schedule(id)
+    }
+
+    pub fn delete_runbook_schedule(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM runbook_schedules WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn due_runbook_schedules(&self) -> AppResult<Vec<RunbookSchedule>> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT sc.id, sc.runbook_id, r.name, sc.server_ids, sc.interval_minutes,
+                    sc.enabled, sc.concurrency, sc.canary_count, sc.timeout_seconds,
+                    sc.next_run_at, sc.last_run_at, sc.last_execution_id, sc.last_error,
+                    sc.created_at, sc.updated_at
+             FROM runbook_schedules sc JOIN runbooks r ON r.id = sc.runbook_id
+             WHERE sc.enabled = 1 AND sc.next_run_at <= ?1 ORDER BY sc.next_run_at",
+        )?;
+        let rows = statement.query_map([now], row_to_runbook_schedule)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn mark_runbook_schedule_started(&self, id: &str, execution_id: &str) -> AppResult<()> {
+        let schedule = self.get_runbook_schedule(id)?;
+        let now = Utc::now();
+        let next = now + Duration::minutes(schedule.interval_minutes.into());
+        self.connection()?.execute(
+            "UPDATE runbook_schedules SET last_run_at = ?2, next_run_at = ?3,
+                last_execution_id = ?4, last_error = NULL, updated_at = ?2 WHERE id = ?1",
+            params![id, now.to_rfc3339(), next.to_rfc3339(), execution_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_runbook_schedule_error(&self, id: &str, error: &str) -> AppResult<()> {
+        let schedule = self.get_runbook_schedule(id)?;
+        let now = Utc::now();
+        let next = now + Duration::minutes(schedule.interval_minutes.into());
+        self.connection()?.execute(
+            "UPDATE runbook_schedules SET last_run_at = ?2, next_run_at = ?3,
+                last_error = ?4, updated_at = ?2 WHERE id = ?1",
+            params![id, now.to_rfc3339(), next.to_rfc3339(), error],
+        )?;
+        Ok(())
+    }
+
+    pub fn create_runbook_execution(
+        &self,
+        request: &RunbookExecutionRequest,
+    ) -> AppResult<RunbookExecution> {
+        let id = Uuid::new_v4().to_string();
+        self.connection()?.execute(
+            "INSERT INTO runbook_executions (
+                id, runbook_id, runbook_name, runbook_snapshot, schedule_id, retry_of,
+                trigger_kind, status, target_ids, concurrency, canary_count, timeout_seconds,
+                created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', ?8, ?9, ?10, ?11, ?12)",
+            params![
+                id,
+                request.runbook.id,
+                request.runbook.name,
+                serde_json::to_string(&request.runbook)
+                    .map_err(|error| AppError::Message(error.to_string()))?,
+                request.schedule_id,
+                request.retry_of,
+                runbook_trigger(request.trigger),
+                json_string(&request.target_ids)?,
+                request.concurrency,
+                request.canary_count,
+                request.timeout_seconds,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        self.get_runbook_execution(&id)
+    }
+
+    pub fn mark_runbook_execution_running(&self, id: &str) -> AppResult<()> {
+        self.connection()?.execute(
+            "UPDATE runbook_executions SET status = 'running', started_at = ?2
+             WHERE id = ?1 AND status = 'queued'",
+            params![id, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_runbook_execution(
+        &self,
+        id: &str,
+        status: RunbookExecutionStatus,
+        result: Option<&RunbookResult>,
+        error: Option<&str>,
+    ) -> AppResult<()> {
+        self.connection()?.execute(
+            "UPDATE runbook_executions SET status = ?2, success_count = ?3,
+                failure_count = ?4, skipped_count = ?5, finished_at = ?6,
+                result = ?7, error = ?8 WHERE id = ?1",
+            params![
+                id,
+                runbook_execution_status(status),
+                result.map_or(0, |value| value.success_count),
+                result.map_or(0, |value| value.failure_count),
+                result.map_or(0, |value| value.skipped_count),
+                Utc::now().to_rfc3339(),
+                result
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|error| AppError::Message(error.to_string()))?,
+                error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn recover_interrupted_runbook_executions(&self) -> AppResult<usize> {
+        let count = self.connection()?.execute(
+            "UPDATE runbook_executions SET status = 'interrupted', finished_at = ?1,
+                error = '应用退出导致本地执行中断；远程命令的最后状态需要人工核对'
+             WHERE status IN ('queued', 'running')",
+            [Utc::now().to_rfc3339()],
+        )?;
+        Ok(count)
+    }
+
+    pub fn list_runbook_executions(
+        &self,
+        runbook_id: Option<&str>,
+    ) -> AppResult<Vec<RunbookExecution>> {
+        let connection = self.connection()?;
+        let select = "SELECT id, runbook_id, runbook_name, schedule_id, retry_of,
+            trigger_kind, status, target_ids, concurrency, canary_count, timeout_seconds,
+            success_count, failure_count, skipped_count, created_at, started_at,
+            finished_at, NULL, error FROM runbook_executions";
+        let mut executions = Vec::new();
+        if let Some(runbook_id) = runbook_id {
+            let mut statement = connection.prepare(&format!(
+                "{select} WHERE runbook_id = ?1 ORDER BY created_at DESC LIMIT 100"
+            ))?;
+            let rows = statement.query_map([runbook_id], row_to_runbook_execution)?;
+            for row in rows {
+                executions.push(row?);
+            }
+        } else {
+            let mut statement =
+                connection.prepare(&format!("{select} ORDER BY created_at DESC LIMIT 100"))?;
+            let rows = statement.query_map([], row_to_runbook_execution)?;
+            for row in rows {
+                executions.push(row?);
+            }
+        }
+        Ok(executions)
+    }
+
+    pub fn get_runbook_execution(&self, id: &str) -> AppResult<RunbookExecution> {
+        self.connection()?
+            .query_row(
+                "SELECT id, runbook_id, runbook_name, schedule_id, retry_of,
+                    trigger_kind, status, target_ids, concurrency, canary_count,
+                    timeout_seconds, success_count, failure_count, skipped_count,
+                    created_at, started_at, finished_at, result, error
+                 FROM runbook_executions WHERE id = ?1",
+                [id],
+                row_to_runbook_execution,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这条 Runbook 执行记录".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn runbook_retry_request(&self, id: &str) -> AppResult<RunbookExecutionRequest> {
+        let execution = self.get_runbook_execution(id)?;
+        if matches!(
+            execution.status,
+            RunbookExecutionStatus::Queued | RunbookExecutionStatus::Running
+        ) {
+            return Err(AppError::Message("运行中的任务不能重试".into()));
+        }
+        let connection = self.connection()?;
+        let snapshot: String = connection.query_row(
+            "SELECT runbook_snapshot FROM runbook_executions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        drop(connection);
+        let runbook: Runbook = serde_json::from_str(&snapshot)
+            .map_err(|_| AppError::Message("历史 Runbook 快照无法读取".into()))?;
+        let successful = execution
+            .result
+            .as_ref()
+            .map(|result| {
+                result
+                    .results
+                    .iter()
+                    .filter(|item| item.success)
+                    .map(|item| item.server_id.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let target_ids = execution
+            .target_ids
+            .iter()
+            .filter(|target| !successful.contains(&target.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if target_ids.is_empty() {
+            return Err(AppError::Message("这条记录没有可重试的失败目标".into()));
+        }
+        Ok(RunbookExecutionRequest {
+            runbook,
+            target_ids,
+            concurrency: execution.concurrency,
+            canary_count: execution.canary_count,
+            timeout_seconds: execution.timeout_seconds,
+            trigger: RunbookTrigger::Retry,
+            schedule_id: None,
+            retry_of: Some(execution.id),
+        })
+    }
+
+    fn validate_runbook_schedule(&self, input: &RunbookScheduleInput) -> AppResult<()> {
+        self.get_runbook(&input.runbook_id)?;
+        let mut ids = input.server_ids.clone();
+        ids.sort();
+        ids.dedup();
+        if ids.len() != input.server_ids.len() || ids.is_empty() || ids.len() > 50 {
+            return Err(AppError::Message(
+                "计划任务需要 1 到 50 台不重复的服务器".into(),
+            ));
+        }
+        for id in ids {
+            self.get_server(&id)?;
+        }
+        if !(1..=10_080).contains(&input.interval_minutes) {
+            return Err(AppError::Message("执行间隔必须在 1 分钟到 7 天之间".into()));
+        }
+        if !(1..=10).contains(&input.concurrency)
+            || !(10..=86_400).contains(&input.timeout_seconds)
+            || input.canary_count > 10
+            || input.canary_count >= input.server_ids.len()
+        {
+            return Err(AppError::Message(
+                "并发数需为 1 到 10，单步超时时长需为 10 秒到 24 小时，灰度数量必须小于目标数"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn list_data_protection_policies(
+        &self,
+        server_id: &str,
+    ) -> AppResult<Vec<DataProtectionPolicy>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, server_id, name, repository_kind, repository, source_kind, paths,
+                    volume_name, database_container, database_name, database_user, keep_last,
+                    has_repository_password, has_s3_credentials, has_database_password,
+                    created_at, updated_at
+             FROM data_protection_policies WHERE server_id = ?1
+             ORDER BY name COLLATE NOCASE, created_at",
+        )?;
+        let rows = statement.query_map([server_id], row_to_data_protection_policy)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_data_protection_policy(&self, id: &str) -> AppResult<DataProtectionPolicy> {
+        self.connection()?
+            .query_row(
+                "SELECT id, server_id, name, repository_kind, repository, source_kind, paths,
+                        volume_name, database_container, database_name, database_user, keep_last,
+                        has_repository_password, has_s3_credentials, has_database_password,
+                        created_at, updated_at
+                 FROM data_protection_policies WHERE id = ?1",
+                [id],
+                row_to_data_protection_policy,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这个数据保护策略".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_data_protection_policy(
+        &self,
+        id: &str,
+        server_id: &str,
+        input: &DataProtectionInput,
+    ) -> AppResult<DataProtectionPolicy> {
+        self.get_server(server_id)?;
+        validate_data_protection(input, false, false)?;
+        let now = Utc::now().to_rfc3339();
+        self.connection()?.execute(
+            "INSERT INTO data_protection_policies (
+                id, server_id, name, repository_kind, repository, source_kind, paths,
+                volume_name, database_container, database_name, database_user, keep_last,
+                has_repository_password, has_s3_credentials, has_database_password,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?15, ?16)",
+            params![
+                id,
+                server_id,
+                input.name.trim(),
+                restic_repository_kind(input.repository_kind),
+                input.repository.trim(),
+                protection_source_kind(input.source_kind),
+                json_string(&input.paths)?,
+                clean(input.volume_name.as_deref()),
+                clean(input.database_container.as_deref()),
+                clean(input.database_name.as_deref()),
+                clean(input.database_user.as_deref()),
+                input.keep_last,
+                input
+                    .s3_access_key_id
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                    && input
+                        .s3_secret_access_key
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty()),
+                input
+                    .database_password
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty()),
+                now,
+                now,
+            ],
+        )?;
+        self.get_data_protection_policy(id)
+    }
+
+    pub fn update_data_protection_policy(
+        &self,
+        id: &str,
+        input: &DataProtectionInput,
+    ) -> AppResult<DataProtectionPolicy> {
+        let existing = self.get_data_protection_policy(id)?;
+        validate_data_protection(
+            input,
+            existing.has_repository_password,
+            existing.has_s3_credentials,
+        )?;
+        let has_s3_credentials = input.repository_kind == ResticRepositoryKind::S3
+            && (existing.has_s3_credentials
+                || match (
+                    input.s3_access_key_id.as_deref(),
+                    input.s3_secret_access_key.as_deref(),
+                ) {
+                    (Some(access), Some(secret)) => !access.is_empty() && !secret.is_empty(),
+                    _ => false,
+                });
+        let has_database_password = input
+            .database_password
+            .as_deref()
+            .map(|value| !value.is_empty())
+            .unwrap_or(existing.has_database_password);
+        self.connection()?.execute(
+            "UPDATE data_protection_policies SET name = ?2, repository_kind = ?3,
+                repository = ?4, source_kind = ?5, paths = ?6, volume_name = ?7,
+                database_container = ?8, database_name = ?9, database_user = ?10,
+                keep_last = ?11, has_repository_password = ?12,
+                has_s3_credentials = ?13, has_database_password = ?14, updated_at = ?15
+             WHERE id = ?1",
+            params![
+                id,
+                input.name.trim(),
+                restic_repository_kind(input.repository_kind),
+                input.repository.trim(),
+                protection_source_kind(input.source_kind),
+                json_string(&input.paths)?,
+                clean(input.volume_name.as_deref()),
+                clean(input.database_container.as_deref()),
+                clean(input.database_name.as_deref()),
+                clean(input.database_user.as_deref()),
+                input.keep_last,
+                input
+                    .repository_password
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                    || existing.has_repository_password,
+                has_s3_credentials,
+                has_database_password,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        self.get_data_protection_policy(id)
+    }
+
+    pub fn delete_data_protection_policy(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM data_protection_policies WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn start_data_protection_run(
+        &self,
+        policy_id: &str,
+        action: DataProtectionAction,
+        target: Option<&str>,
+    ) -> AppResult<DataProtectionRun> {
+        let id = Uuid::new_v4().to_string();
+        self.connection()?.execute(
+            "INSERT INTO data_protection_runs (
+                id, policy_id, action, status, target, started_at
+             ) VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
+            params![
+                id,
+                policy_id,
+                data_protection_action(action),
+                target,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        self.get_data_protection_run(&id)
+    }
+
+    pub fn finish_data_protection_run(
+        &self,
+        id: &str,
+        status: DataProtectionRunStatus,
+        snapshot_id: Option<&str>,
+        output: &str,
+        error: Option<&str>,
+        duration_ms: u64,
+    ) -> AppResult<()> {
+        self.connection()?.execute(
+            "UPDATE data_protection_runs SET status = ?2, snapshot_id = ?3,
+                output = ?4, error = ?5, finished_at = ?6, duration_ms = ?7 WHERE id = ?1",
+            params![
+                id,
+                data_protection_run_status(status),
+                snapshot_id,
+                output,
+                error,
+                Utc::now().to_rfc3339(),
+                duration_ms as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_data_protection_run(&self, id: &str) -> AppResult<DataProtectionRun> {
+        self.connection()?
+            .query_row(
+                "SELECT id, policy_id, action, status, snapshot_id, target, output, error,
+                        started_at, finished_at, duration_ms
+                 FROM data_protection_runs WHERE id = ?1",
+                [id],
+                row_to_data_protection_run,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这条数据保护记录".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn list_data_protection_runs(&self, policy_id: &str) -> AppResult<Vec<DataProtectionRun>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, policy_id, action, status, snapshot_id, target, output, error,
+                    started_at, finished_at, duration_ms
+             FROM data_protection_runs WHERE policy_id = ?1
+             ORDER BY started_at DESC LIMIT 100",
+        )?;
+        let rows = statement.query_map([policy_id], row_to_data_protection_run)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn list_port_forwards(&self) -> AppResult<Vec<PortForwardRule>> {
@@ -1308,6 +1980,133 @@ fn alert_status(status: AlertStatus) -> &'static str {
     }
 }
 
+fn validate_data_protection(
+    input: &DataProtectionInput,
+    has_existing_password: bool,
+    has_existing_s3: bool,
+) -> AppResult<()> {
+    if input.name.trim().is_empty() || input.name.chars().count() > 120 {
+        return Err(AppError::Message(
+            "策略名称不能为空且不能超过 120 个字符".into(),
+        ));
+    }
+    if !(1..=100).contains(&input.keep_last) {
+        return Err(AppError::Message("保留快照数量必须在 1 到 100 之间".into()));
+    }
+    let repository = input.repository.trim();
+    match input.repository_kind {
+        ResticRepositoryKind::Local
+            if !repository.starts_with('/') || repository.contains('\n') =>
+        {
+            return Err(AppError::Message("本地 Restic 仓库必须是绝对路径".into()));
+        }
+        ResticRepositoryKind::S3
+            if !(repository.starts_with("s3:https://") || repository.starts_with("s3:http://"))
+                || repository.contains('\n') =>
+        {
+            return Err(AppError::Message(
+                "S3 仓库格式为 s3:https://endpoint/bucket/可选前缀".into(),
+            ));
+        }
+        _ => {}
+    }
+    if repository.len() > 2048 {
+        return Err(AppError::Message("Restic 仓库地址过长".into()));
+    }
+    let has_password = input
+        .repository_password
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        || has_existing_password;
+    if !has_password {
+        return Err(AppError::Message("请设置 Restic 仓库密码".into()));
+    }
+    if input.repository_kind == ResticRepositoryKind::S3 {
+        let has_s3 = (input
+            .s3_access_key_id
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            && input
+                .s3_secret_access_key
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()))
+            || has_existing_s3;
+        if !has_s3 {
+            return Err(AppError::Message(
+                "S3 仓库需要 Access Key 和 Secret Key".into(),
+            ));
+        }
+    }
+    match input.source_kind {
+        ProtectionSourceKind::Directory => {
+            if input.paths.is_empty()
+                || input.paths.len() > 20
+                || input
+                    .paths
+                    .iter()
+                    .any(|path| !path.starts_with('/') || path.contains('\n') || path.len() > 4096)
+            {
+                return Err(AppError::Message(
+                    "目录备份需要 1 到 20 个远程绝对路径".into(),
+                ));
+            }
+        }
+        ProtectionSourceKind::DockerVolume => {
+            let volume = input.volume_name.as_deref().unwrap_or("");
+            if volume.is_empty()
+                || !volume.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
+                })
+            {
+                return Err(AppError::Message("Docker 卷名称包含无效字符".into()));
+            }
+        }
+        ProtectionSourceKind::Postgresql | ProtectionSourceKind::Mysql => {
+            if clean(input.database_container.as_deref()).is_none()
+                || clean(input.database_name.as_deref()).is_none()
+            {
+                return Err(AppError::Message(
+                    "数据库备份需要容器名称和数据库名称".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restic_repository_kind(kind: ResticRepositoryKind) -> &'static str {
+    match kind {
+        ResticRepositoryKind::Local => "local",
+        ResticRepositoryKind::S3 => "s3",
+    }
+}
+
+fn protection_source_kind(kind: ProtectionSourceKind) -> &'static str {
+    match kind {
+        ProtectionSourceKind::Directory => "directory",
+        ProtectionSourceKind::DockerVolume => "docker_volume",
+        ProtectionSourceKind::Postgresql => "postgresql",
+        ProtectionSourceKind::Mysql => "mysql",
+    }
+}
+
+fn data_protection_action(action: DataProtectionAction) -> &'static str {
+    match action {
+        DataProtectionAction::Initialize => "initialize",
+        DataProtectionAction::Check => "check",
+        DataProtectionAction::Backup => "backup",
+        DataProtectionAction::Restore => "restore",
+    }
+}
+
+fn data_protection_run_status(status: DataProtectionRunStatus) -> &'static str {
+    match status {
+        DataProtectionRunStatus::Running => "running",
+        DataProtectionRunStatus::Succeeded => "succeeded",
+        DataProtectionRunStatus::Failed => "failed",
+    }
+}
+
 fn validate_port_forward(input: &PortForwardInput) -> AppResult<()> {
     if input.name.trim().is_empty() {
         return Err(AppError::Message("规则名称不能为空".into()));
@@ -1446,6 +2245,124 @@ fn auth_name(method: &crate::models::AuthMethod) -> &'static str {
         crate::models::AuthMethod::Key => "key",
         crate::models::AuthMethod::Agent => "agent",
     }
+}
+
+fn json_string<T: serde::Serialize>(value: &T) -> AppResult<String> {
+    serde_json::to_string(value).map_err(|error| AppError::Message(error.to_string()))
+}
+
+fn runbook_trigger(trigger: RunbookTrigger) -> &'static str {
+    match trigger {
+        RunbookTrigger::Manual => "manual",
+        RunbookTrigger::Scheduled => "scheduled",
+        RunbookTrigger::Retry => "retry",
+    }
+}
+
+fn runbook_execution_status(status: RunbookExecutionStatus) -> &'static str {
+    match status {
+        RunbookExecutionStatus::Queued => "queued",
+        RunbookExecutionStatus::Running => "running",
+        RunbookExecutionStatus::Succeeded => "succeeded",
+        RunbookExecutionStatus::Failed => "failed",
+        RunbookExecutionStatus::Partial => "partial",
+        RunbookExecutionStatus::Cancelled => "cancelled",
+        RunbookExecutionStatus::TimedOut => "timed_out",
+        RunbookExecutionStatus::Interrupted => "interrupted",
+    }
+}
+
+fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(&format!("\"{value}\"")).map_err(|_| rusqlite::Error::InvalidQuery)
+}
+
+fn row_to_runbook_schedule(row: &Row<'_>) -> rusqlite::Result<RunbookSchedule> {
+    let server_ids: String = row.get(3)?;
+    Ok(RunbookSchedule {
+        id: row.get(0)?,
+        runbook_id: row.get(1)?,
+        runbook_name: row.get(2)?,
+        server_ids: serde_json::from_str(&server_ids).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        interval_minutes: row.get(4)?,
+        enabled: row.get(5)?,
+        concurrency: row.get(6)?,
+        canary_count: row.get(7)?,
+        timeout_seconds: row.get(8)?,
+        next_run_at: row.get(9)?,
+        last_run_at: row.get(10)?,
+        last_execution_id: row.get(11)?,
+        last_error: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn row_to_runbook_execution(row: &Row<'_>) -> rusqlite::Result<RunbookExecution> {
+    let target_ids: String = row.get(7)?;
+    let result: Option<String> = row.get(17)?;
+    Ok(RunbookExecution {
+        id: row.get(0)?,
+        runbook_id: row.get(1)?,
+        runbook_name: row.get(2)?,
+        schedule_id: row.get(3)?,
+        retry_of: row.get(4)?,
+        trigger: parse_enum(&row.get::<_, String>(5)?)?,
+        status: parse_enum(&row.get::<_, String>(6)?)?,
+        target_ids: serde_json::from_str(&target_ids).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        concurrency: row.get(8)?,
+        canary_count: row.get(9)?,
+        timeout_seconds: row.get(10)?,
+        success_count: row.get(11)?,
+        failure_count: row.get(12)?,
+        skipped_count: row.get(13)?,
+        created_at: row.get(14)?,
+        started_at: row.get(15)?,
+        finished_at: row.get(16)?,
+        result: result
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        error: row.get(18)?,
+    })
+}
+
+fn row_to_data_protection_policy(row: &Row<'_>) -> rusqlite::Result<DataProtectionPolicy> {
+    let paths: String = row.get(6)?;
+    Ok(DataProtectionPolicy {
+        id: row.get(0)?,
+        server_id: row.get(1)?,
+        name: row.get(2)?,
+        repository_kind: parse_enum(&row.get::<_, String>(3)?)?,
+        repository: row.get(4)?,
+        source_kind: parse_enum(&row.get::<_, String>(5)?)?,
+        paths: serde_json::from_str(&paths).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        volume_name: row.get(7)?,
+        database_container: row.get(8)?,
+        database_name: row.get(9)?,
+        database_user: row.get(10)?,
+        keep_last: row.get(11)?,
+        has_repository_password: row.get(12)?,
+        has_s3_credentials: row.get(13)?,
+        has_database_password: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+    })
+}
+
+fn row_to_data_protection_run(row: &Row<'_>) -> rusqlite::Result<DataProtectionRun> {
+    Ok(DataProtectionRun {
+        id: row.get(0)?,
+        policy_id: row.get(1)?,
+        action: parse_enum(&row.get::<_, String>(2)?)?,
+        status: parse_enum(&row.get::<_, String>(3)?)?,
+        snapshot_id: row.get(4)?,
+        target: row.get(5)?,
+        output: row.get(6)?,
+        error: row.get(7)?,
+        started_at: row.get(8)?,
+        finished_at: row.get(9)?,
+        duration_ms: row.get::<_, i64>(10)?.max(0) as u64,
+    })
 }
 
 fn row_to_server(row: &Row<'_>) -> rusqlite::Result<Server> {

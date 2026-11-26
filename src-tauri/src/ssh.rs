@@ -1,6 +1,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -63,6 +64,12 @@ pub struct ExecOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+}
+
+pub enum ControlledExecOutput {
+    Completed(ExecOutput),
+    Cancelled { stdout: String, stderr: String },
+    TimedOut { stdout: String, stderr: String },
 }
 
 pub fn credential_entry(server_id: &str, kind: &str) -> AppResult<Entry> {
@@ -525,6 +532,70 @@ pub fn execute(session: &Session, command: &str) -> AppResult<ExecOutput> {
         stderr,
         exit_code: channel.exit_status()?,
     })
+}
+
+pub fn execute_controlled(
+    session: &Session,
+    command: &str,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> AppResult<ControlledExecOutput> {
+    let mut channel = session.channel_session()?;
+    channel.exec(command)?;
+    session.set_blocking(false);
+    let started = Instant::now();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let result = (|| -> AppResult<ControlledExecOutput> {
+        loop {
+            let stdout_eof = read_available(&mut channel, &mut stdout)?;
+            let stderr_eof = read_available(&mut channel.stderr(), &mut stderr)?;
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = channel.close();
+                return Ok(ControlledExecOutput::Cancelled {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                });
+            }
+            if started.elapsed() >= timeout {
+                let _ = channel.close();
+                return Ok(ControlledExecOutput::TimedOut {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                });
+            }
+            if (stdout_eof && stderr_eof) || channel.eof() {
+                session.set_blocking(true);
+                channel.wait_close()?;
+                return Ok(ControlledExecOutput::Completed(ExecOutput {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                    exit_code: channel.exit_status()?,
+                }));
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    })();
+    session.set_blocking(true);
+    result
+}
+
+fn read_available(reader: &mut impl Read, output: &mut Vec<u8>) -> AppResult<bool> {
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(count) => {
+                if output.len() < 4 * 1024 * 1024 {
+                    let remaining = 4 * 1024 * 1024 - output.len();
+                    output.extend_from_slice(&buffer[..count.min(remaining)]);
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 pub fn test(

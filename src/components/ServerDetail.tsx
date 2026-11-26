@@ -7,8 +7,9 @@ import { ConnectionDiagnostics } from "./ConnectionDiagnostics";
 import { FileManager } from "./FileManager";
 import { DockerManager } from "./DockerManager";
 import { SystemdManager } from "./SystemdManager";
+import { DataProtectionManager } from "./DataProtectionManager";
 
-export type DetailTab = "overview" | "diagnostics" | "files" | "docker" | "services" | "actions";
+export type DetailTab = "overview" | "diagnostics" | "files" | "docker" | "services" | "protection" | "actions";
 
 interface Props {
   server: Server;
@@ -37,6 +38,7 @@ export function ServerDetail({ server, jumpServer, diagnostics, onDiagnose, metr
         <button className="tab" type="button" role="tab" aria-selected={tab === "files"} onClick={() => onTabChange("files")}>文件管理</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "docker"} onClick={() => onTabChange("docker")}>Docker</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "services"} onClick={() => onTabChange("services")}>服务管理</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "protection"} onClick={() => onTabChange("protection")}>数据保护</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "actions"} onClick={() => onTabChange("actions")}>快捷运维</button>
       </div>
       {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
@@ -44,6 +46,7 @@ export function ServerDetail({ server, jumpServer, diagnostics, onDiagnose, metr
       {tab === "files" && <FileManager server={server} trusted={trusted} />}
       {tab === "docker" && <DockerManager server={server} trusted={trusted} />}
       {tab === "services" && <SystemdManager server={server} trusted={trusted} />}
+      {tab === "protection" && <DataProtectionManager server={server} trusted={trusted} />}
       {tab === "actions" && <QuickActions server={server} trusted={trusted} />}
     </section>
   );

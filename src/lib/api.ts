@@ -10,6 +10,12 @@ import type {
   BackupSummary,
   ConnectionReport,
   ConnectionTest,
+  DataProtectionInput,
+  DataProtectionOverview,
+  DataProtectionPolicy,
+  DataProtectionRestoreResult,
+  DataProtectionRun,
+  ResticSnapshot,
   ComposeAction,
   ComposeActionResult,
   ComposeApplication,
@@ -33,8 +39,11 @@ import type {
   PortForwardRule,
   QuickAction,
   Runbook,
+  RunbookExecution,
   RunbookInput,
   RunbookResult,
+  RunbookSchedule,
+  RunbookScheduleInput,
   SecurityReport,
   Server,
   ServerInput,
@@ -80,7 +89,7 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events"].includes(command)) return [] as T;
     if (command === "get_monitoring_settings") {
       return {
         autoCollect: false,
@@ -99,7 +108,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.3.0",
+        version: "1.4.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "macOS Keychain",
@@ -128,6 +137,24 @@ export const api = {
     call<BackupPreview>("preview_encrypted_backup", { path, password }),
   restoreEncryptedBackup: (path: string, password: string) =>
     call<BackupRestoreResult>("restore_encrypted_backup", { path, password }),
+  dataProtectionOverview: (id: string, allowUnknownHost = false) =>
+    call<DataProtectionOverview>("get_data_protection_overview", { id, allowUnknownHost }),
+  createDataProtectionPolicy: (id: string, input: DataProtectionInput) =>
+    call<DataProtectionPolicy>("create_data_protection_policy", { id, input }),
+  updateDataProtectionPolicy: (id: string, input: DataProtectionInput) =>
+    call<DataProtectionPolicy>("update_data_protection_policy", { id, input }),
+  deleteDataProtectionPolicy: (id: string) => call<void>("delete_data_protection_policy", { id }),
+  initializeDataProtection: (id: string, allowUnknownHost = false) =>
+    call<DataProtectionRun>("initialize_data_protection", { id, allowUnknownHost }),
+  checkDataProtection: (id: string, allowUnknownHost = false) =>
+    call<DataProtectionRun>("check_data_protection", { id, allowUnknownHost }),
+  runDataProtectionBackup: (id: string, allowUnknownHost = false) =>
+    call<DataProtectionRun>("run_data_protection_backup", { id, allowUnknownHost }),
+  dataProtectionSnapshots: (id: string, allowUnknownHost = false) =>
+    call<ResticSnapshot[]>("list_data_protection_snapshots", { id, allowUnknownHost }),
+  restoreDataProtectionSnapshot: (id: string, snapshotId: string, target?: string, allowUnknownHost = false) =>
+    call<DataProtectionRestoreResult>("restore_data_protection_snapshot", { id, snapshotId, target, allowUnknownHost }),
+  dataProtectionRuns: (id: string) => call<DataProtectionRun[]>("list_data_protection_runs", { id }),
   listServers: () => call<Server[]>("list_servers"),
   createServer: (input: ServerInput) => call<Server>("create_server", { input }),
   importSshConfig: (path: string) => call<SshConfigImport>("import_ssh_config", { path }),
@@ -205,6 +232,18 @@ export const api = {
   deleteRunbook: (id: string) => call<void>("delete_runbook", { id }),
   runRunbook: (id: string, ids: string[], concurrency: number, canaryCount: number) =>
     call<RunbookResult>("run_runbook", { id, ids, concurrency, canaryCount }),
+  startRunbookExecution: (id: string, ids: string[], concurrency: number, canaryCount: number, timeoutSeconds: number) =>
+    call<RunbookExecution>("start_runbook_execution", { id, ids, concurrency, canaryCount, timeoutSeconds }),
+  runbookExecution: (id: string) => call<RunbookExecution>("get_runbook_execution", { id }),
+  runbookExecutions: (runbookId?: string) => call<RunbookExecution[]>("list_runbook_executions", { runbookId }),
+  cancelRunbookExecution: (id: string) => call<RunbookExecution>("cancel_runbook_execution", { id }),
+  retryRunbookExecution: (id: string) => call<RunbookExecution>("retry_runbook_execution", { id }),
+  runbookSchedules: () => call<RunbookSchedule[]>("list_runbook_schedules"),
+  createRunbookSchedule: (input: RunbookScheduleInput) => call<RunbookSchedule>("create_runbook_schedule", { input }),
+  updateRunbookSchedule: (id: string, input: RunbookScheduleInput) => call<RunbookSchedule>("update_runbook_schedule", { id, input }),
+  setRunbookScheduleEnabled: (id: string, enabled: boolean) => call<RunbookSchedule>("set_runbook_schedule_enabled", { id, enabled }),
+  deleteRunbookSchedule: (id: string) => call<void>("delete_runbook_schedule", { id }),
+  runRunbookScheduleNow: (id: string) => call<RunbookExecution>("run_runbook_schedule_now", { id }),
   runBatchCommand: (ids: string[], command: string, concurrency: number) =>
     call<BatchResult>("run_batch_command", { ids, command, concurrency }),
   listPortForwards: () => call<PortForwardRule[]>("list_port_forwards"),

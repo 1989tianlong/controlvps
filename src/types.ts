@@ -315,6 +315,7 @@ export interface RunbookStepResult {
   output: string;
   exitCode: number | null;
   success: boolean;
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
   error?: string;
   durationMs: number;
 }
@@ -335,6 +336,129 @@ export interface RunbookResult {
   failureCount: number;
   skippedCount: number;
   durationMs: number;
+}
+
+export type RunbookExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled" | "timed_out" | "interrupted";
+export type RunbookTrigger = "manual" | "scheduled" | "retry";
+
+export interface RunbookExecution {
+  id: string;
+  runbookId: string;
+  runbookName: string;
+  scheduleId?: string;
+  retryOf?: string;
+  trigger: RunbookTrigger;
+  status: RunbookExecutionStatus;
+  targetIds: string[];
+  concurrency: number;
+  canaryCount: number;
+  timeoutSeconds: number;
+  successCount: number;
+  failureCount: number;
+  skippedCount: number;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  result?: RunbookResult;
+  error?: string;
+}
+
+export interface RunbookScheduleInput {
+  runbookId: string;
+  serverIds: string[];
+  intervalMinutes: number;
+  enabled: boolean;
+  concurrency: number;
+  canaryCount: number;
+  timeoutSeconds: number;
+}
+
+export interface RunbookSchedule extends RunbookScheduleInput {
+  id: string;
+  runbookName: string;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastExecutionId?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ResticRepositoryKind = "local" | "s3";
+export type ProtectionSourceKind = "directory" | "docker_volume" | "postgresql" | "mysql";
+
+export interface DataProtectionInput {
+  name: string;
+  repositoryKind: ResticRepositoryKind;
+  repository: string;
+  repositoryPassword?: string;
+  s3AccessKeyId?: string;
+  s3SecretAccessKey?: string;
+  sourceKind: ProtectionSourceKind;
+  paths: string[];
+  volumeName?: string;
+  databaseContainer?: string;
+  databaseName?: string;
+  databaseUser?: string;
+  databasePassword?: string;
+  keepLast: number;
+}
+
+export interface DataProtectionPolicy {
+  id: string;
+  serverId: string;
+  name: string;
+  repositoryKind: ResticRepositoryKind;
+  repository: string;
+  sourceKind: ProtectionSourceKind;
+  paths: string[];
+  volumeName?: string;
+  databaseContainer?: string;
+  databaseName?: string;
+  databaseUser?: string;
+  keepLast: number;
+  hasRepositoryPassword: boolean;
+  hasS3Credentials: boolean;
+  hasDatabasePassword: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DataProtectionAction = "initialize" | "check" | "backup" | "restore";
+export type DataProtectionRunStatus = "running" | "succeeded" | "failed";
+
+export interface DataProtectionRun {
+  id: string;
+  policyId: string;
+  action: DataProtectionAction;
+  status: DataProtectionRunStatus;
+  snapshotId?: string;
+  target?: string;
+  output: string;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs: number;
+}
+
+export interface ResticSnapshot {
+  id: string;
+  shortId: string;
+  time: string;
+  hostname: string;
+  paths: string[];
+  tags: string[];
+}
+
+export interface DataProtectionOverview {
+  resticVersion: string;
+  policies: DataProtectionPolicy[];
+}
+
+export interface DataProtectionRestoreResult {
+  snapshotId: string;
+  target: string;
+  output: string;
 }
 
 export type PortForwardKind = "local" | "remote" | "dynamic";

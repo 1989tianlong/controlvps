@@ -48,7 +48,7 @@ export default function App() {
   const [metrics, setMetrics] = useState<Record<string, ServerMetrics>>({});
   const [monitoringSettings, setMonitoringSettings] = useState<MonitoringSettings>();
   const [terminalRequest, setTerminalRequest] = useState<TerminalRequest>();
-  const [automationMode, setAutomationMode] = useState<"snippets" | "runbooks">("snippets");
+  const [automationMode, setAutomationMode] = useState<"snippets" | "runbooks" | "operations">("snippets");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);

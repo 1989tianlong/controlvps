@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpenCheck, CheckCircle2, ChevronRight, ListChecks, Play, Plus, Save, Search, Server as ServerIcon, ShieldAlert, TerminalSquare, Trash2, X, XCircle } from "lucide-react";
+import { BookOpenCheck, CalendarClock, CheckCircle2, ChevronRight, ListChecks, Play, Plus, Save, Search, Server as ServerIcon, ShieldAlert, TerminalSquare, Trash2, X, XCircle } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import type { BatchResult, Server, Snippet, SnippetInput, TrustedExecutor } from "../types";
 import { RunbookManager } from "./RunbookManager";
+import { RunbookOperations } from "./RunbookOperations";
 
 const emptyDraft: SnippetInput = { name: "", description: "", command: "" };
 const variables = [
@@ -15,18 +16,18 @@ interface Props {
   servers: Server[];
   trusted: TrustedExecutor;
   onAdd: () => void;
-  requestedMode?: "snippets" | "runbooks";
+  requestedMode?: "snippets" | "runbooks" | "operations";
 }
 
 export function AutomationPage(props: Props) {
-  const [mode, setMode] = useState<"snippets" | "runbooks">("snippets");
+  const [mode, setMode] = useState<"snippets" | "runbooks" | "operations">("snippets");
   useEffect(() => {
     if (props.requestedMode) setMode(props.requestedMode);
   }, [props.requestedMode]);
   return <>
     <div className="page-heading"><div><h1>批量运维</h1><p>保存常用命令，或使用分步 Runbook 执行可审查的运维流程。</p></div>{mode === "runbooks" && <span className="badge badge-cool"><BookOpenCheck size={15} />失败即停止当前服务器后续步骤</span>}</div>
-    <div className="workspace-switch" role="tablist" aria-label="运维模式"><button className="tab" type="button" role="tab" aria-selected={mode === "snippets"} onClick={() => setMode("snippets")}><ListChecks size={16} />命令片段</button><button className="tab" type="button" role="tab" aria-selected={mode === "runbooks"} onClick={() => setMode("runbooks")}><BookOpenCheck size={16} />Runbook</button></div>
-    {mode === "snippets" ? <SnippetAutomation {...props} /> : <RunbookManager {...props} />}
+    <div className="workspace-switch" role="tablist" aria-label="运维模式"><button className="tab" type="button" role="tab" aria-selected={mode === "snippets"} onClick={() => setMode("snippets")}><ListChecks size={16} />命令片段</button><button className="tab" type="button" role="tab" aria-selected={mode === "runbooks"} onClick={() => setMode("runbooks")}><BookOpenCheck size={16} />Runbook</button><button className="tab" type="button" role="tab" aria-selected={mode === "operations"} onClick={() => setMode("operations")}><CalendarClock size={16} />计划与历史</button></div>
+    {mode === "snippets" ? <SnippetAutomation {...props} /> : mode === "runbooks" ? <RunbookManager {...props} /> : <RunbookOperations {...props} />}
   </>;
 }
 
