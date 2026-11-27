@@ -256,6 +256,8 @@ pub fn run() {
             commands::update_byo_sync_config,
             commands::byo_sync_push,
             commands::byo_sync_pull,
+            commands::get_monthly_traffic,
+            commands::set_traffic_quota_gb,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ControlVPS")

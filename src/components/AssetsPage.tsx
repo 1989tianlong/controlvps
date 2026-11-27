@@ -9,7 +9,10 @@ interface Props {
 }
 
 const providers: { value: CloudProvider; label: string }[] = [
+  { value: "hetzner", label: "Hetzner Cloud" },
   { value: "digital_ocean", label: "DigitalOcean" },
+  { value: "vultr", label: "Vultr" },
+  { value: "cloudflare", label: "Cloudflare (Tunnel)" },
   { value: "tailscale", label: "Tailscale" },
 ];
 

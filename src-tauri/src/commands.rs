@@ -2312,6 +2312,48 @@ pub async fn byo_sync_pull(
     run_blocking(move || crate::backup::byo_sync_pull(&db_clone, &password)).await
 }
 
+#[tauri::command]
+pub async fn get_monthly_traffic(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<crate::live_ops::MonthlyTrafficReport> {
+    let quota_gb = db
+        .get_app_setting(&format!("traffic-quota:{id}"))
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0);
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            &job.jumps,
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        let res = crate::live_ops::collect_monthly_traffic(&connection.session, quota_gb);
+        connection.disconnect();
+        res
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn set_traffic_quota_gb(
+    db: State<'_, Database>,
+    id: String,
+    quota_gb: Option<f64>,
+) -> CommandResult<Option<f64>> {
+    let clean = quota_gb.filter(|v| v.is_finite() && *v > 0.0);
+    let value = clean.map(|v| format!("{v:.2}")).unwrap_or_default();
+    db.set_app_setting(&format!("traffic-quota:{id}"), &value)?;
+    Ok(clean)
+}
+
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {
     crate::runbook::connection_job(db, id).map_err(CommandError::from)
 }

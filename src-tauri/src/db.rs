@@ -3685,6 +3685,9 @@ fn cloud_provider_name(provider: CloudProvider) -> &'static str {
     match provider {
         CloudProvider::DigitalOcean => "digital_ocean",
         CloudProvider::Tailscale => "tailscale",
+        CloudProvider::Hetzner => "hetzner",
+        CloudProvider::Cloudflare => "cloudflare",
+        CloudProvider::Vultr => "vultr",
     }
 }
 

@@ -52,6 +52,9 @@ pub struct ServerInput {
 pub enum CloudProvider {
     DigitalOcean,
     Tailscale,
+    Hetzner,
+    Cloudflare,
+    Vultr,
 }
 
 #[derive(Debug, Clone, Deserialize)]

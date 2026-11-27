@@ -15,20 +15,23 @@ const defaultYaml = `services:
 interface EditorProps {
   server: Server;
   project?: ComposeProject;
+  preset?: { projectName: string; content: string };
   trusted: TrustedExecutor;
   onClose: () => void;
   onChanged: () => void;
 }
 
-export function ComposeDeploymentEditor({ server, project, trusted, onClose, onChanged }: EditorProps) {
+export function ComposeDeploymentEditor({ server, project, preset, trusted, onClose, onChanged }: EditorProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [loading, setLoading] = useState(Boolean(project));
   const [created, setCreated] = useState(false);
-  const [projectName, setProjectName] = useState(project?.name ?? "");
-  const [workingDirectory, setWorkingDirectory] = useState(project?.workingDirectory ?? "~/controlvps-apps/app");
+  const [projectName, setProjectName] = useState(project?.name ?? preset?.projectName ?? "");
+  const [workingDirectory, setWorkingDirectory] = useState(
+    project?.workingDirectory ?? (preset?.projectName ? `~/controlvps-apps/${preset.projectName}` : "~/controlvps-apps/app"),
+  );
   const [directoryTouched, setDirectoryTouched] = useState(Boolean(project));
   const [configFiles, setConfigFiles] = useState<string[]>(project?.configFiles.filter((path) => !path.includes("/.controlvps/rollback-")) ?? []);
-  const [content, setContent] = useState(defaultYaml);
+  const [content, setContent] = useState(preset?.content ?? defaultYaml);
   const [revision, setRevision] = useState("");
   const [environment, setEnvironment] = useState<ComposeEnvironmentEntry[]>([]);
   const [changes, setChanges] = useState<Record<string, string | null>>({});

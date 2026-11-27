@@ -33,7 +33,7 @@ export interface ServerInput {
   inheritAuth?: boolean;
 }
 
-export type CloudProvider = "digital_ocean" | "tailscale";
+export type CloudProvider = "digital_ocean" | "tailscale" | "hetzner" | "cloudflare" | "vultr";
 
 export interface CloudAccountInput {
   name: string;
@@ -1321,4 +1321,15 @@ export interface ByoSyncStatus {
   remoteHash?: string;
   remoteSizeBytes?: number;
   remoteHasChanges: boolean;
+}
+
+export interface MonthlyTrafficReport {
+  interface: string;
+  source: string;
+  rxBytes: number;
+  txBytes: number;
+  totalBytes: number;
+  quotaGb?: number;
+  usedPercent?: number;
+  warning: boolean;
 }

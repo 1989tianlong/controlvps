@@ -14,6 +14,8 @@ export function DockerManager({ server, trusted }: Props) {
   const [section, setSection] = useState<"containers" | "compose">("containers");
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("all");
+  const [sortBy, setSortBy] = useState<"default" | "cpu" | "mem">("default");
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -29,6 +31,14 @@ export function DockerManager({ server, trusted }: Props) {
     finally { if (showBusy) setBusy(""); }
   }, [server, trusted]);
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (section !== "containers" || !autoRefresh) return;
+    const timer = window.setInterval(() => {
+      void load(false);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [section, autoRefresh, load]);
 
   const action = async (container: DockerContainer, action: DockerAction) => {
     if (action !== "start" && !window.confirm(`确认${action === "stop" ? "停止" : "重启"}容器 ${container.name}？运行中的服务可能中断。`)) return;
@@ -78,19 +88,25 @@ export function DockerManager({ server, trusted }: Props) {
     finally { setBusy(""); }
   };
 
-  const containers = overview?.containers.filter((container) => {
+  const containers = [...(overview?.containers.filter((container) => {
     const matchesQuery = `${container.name} ${container.image}`.toLowerCase().includes(query.toLowerCase());
     const matchesState = stateFilter === "all" || (stateFilter === "running" ? container.state === "running" : container.state !== "running");
     return matchesQuery && matchesState;
-  }) ?? [];
+  }) ?? [])].sort((a, b) => {
+    if (sortBy === "cpu") return (b.cpuPercent ?? -1) - (a.cpuPercent ?? -1);
+    if (sortBy === "mem") return (b.memoryPercent ?? -1) - (a.memoryPercent ?? -1);
+    return 0;
+  });
+  const runningCount = overview?.containers.filter((c) => c.state === "running").length ?? 0;
+  const totalCpu = overview?.containers.reduce((sum, c) => sum + (c.cpuPercent ?? 0), 0) ?? 0;
   const services = overview?.containers.filter((container) => container.state === "running").flatMap((container) => container.services).filter((service) => service.protocol === "tcp") ?? [];
   return <div className="docker-manager">
     <div className="tabs docker-section-tabs" role="tablist" aria-label="Docker 管理范围"><button className="tab" type="button" role="tab" aria-selected={section === "containers"} onClick={() => setSection("containers")}><Box size={16} />容器</button><button className="tab" type="button" role="tab" aria-selected={section === "compose"} onClick={() => setSection("compose")}><Boxes size={16} />Compose</button></div>
     {section === "containers" && <>
-    <div className="panel-header"><div><h2>Docker 容器</h2><span className="table-meta">{overview ? `Docker ${overview.version} · ${overview.containers.length} 个容器` : "正在通过 SSH 检测 Docker"}</span></div><button className="btn" type="button" disabled={busy !== ""} onClick={() => void load()}><RefreshCw size={15} />刷新</button></div>
+    <div className="panel-header"><div><h2>Docker 容器</h2><span className="table-meta">{overview ? `Docker ${overview.version} · ${runningCount}/${overview.containers.length} 运行中 · 合计 CPU ${totalCpu.toFixed(1)}%` : "正在通过 SSH 检测 Docker"}</span></div><div className="row-actions"><label className="switch-control"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /><span>Top 5秒刷新</span></label><button className="btn" type="button" disabled={busy !== ""} onClick={() => void load()}><RefreshCw size={15} />刷新</button></div></div>
     {error && <div className="error-banner m-4" role="alert"><p>{error}</p><button className="btn" type="button" onClick={() => void load()}>重试</button></div>}
     {notice && <div className="file-notice docker-notice" role="status">{notice}</div>}
-    {overview && <div className="docker-filters"><div className="search-wrap"><Search size={16} /><input className="input" type="search" aria-label="搜索 Docker 容器" placeholder="搜索名称或镜像" value={query} onChange={(event) => setQuery(event.target.value)} /></div><select className="select" aria-label="按容器状态筛选" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}><option value="all">全部状态</option><option value="running">仅运行中</option><option value="stopped">仅已停止</option></select></div>}
+    {overview && <div className="docker-filters"><div className="search-wrap"><Search size={16} /><input className="input" type="search" aria-label="搜索 Docker 容器" placeholder="搜索名称或镜像" value={query} onChange={(event) => setQuery(event.target.value)} /></div><select className="select" aria-label="按容器状态筛选" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}><option value="all">全部状态</option><option value="running">仅运行中</option><option value="stopped">仅已停止</option></select><select className="select" aria-label="容器排序方式" value={sortBy} onChange={(event) => setSortBy(event.target.value as "default" | "cpu" | "mem")}><option value="default">默认排序</option><option value="cpu">按 CPU 降序 (Top)</option><option value="mem">按内存降序 (Top)</option></select></div>}
     {!overview && !error && <div className="skeleton docker-skeleton" aria-label="正在读取 Docker 容器" />}
     {overview && overview.containers.length === 0 && <div className="empty"><div><Box size={30} /><h2>没有 Docker 容器</h2><p>服务器已安装 Docker，但当前没有运行或停止的容器。</p></div></div>}
     {containers.length > 0 && <div className="table-wrap"><table className="data-table docker-table"><thead><tr><th>容器</th><th>状态</th><th>CPU / 内存</th><th>PIDs</th><th className="text-right">操作</th></tr></thead><tbody>{containers.map((container) => <tr key={container.id}><td><span className="table-name">{container.name}</span><span className="table-meta" title={container.image}>{container.image}</span>{container.ports && <span className="table-meta" title={container.ports}>{container.ports}</span>}</td><td><span className={container.state === "running" ? "badge badge-ok" : "badge"}>{container.state === "running" ? "运行中" : "已停止"}</span><span className="table-meta" title={container.status}>{container.status}</span></td><td className="measured">{container.cpuPercent == null ? "—" : `${container.cpuPercent.toFixed(1)}% / ${container.memoryPercent?.toFixed(1) ?? "—"}%`}{container.memoryUsage && <span className="table-meta">{container.memoryUsage}</span>}</td><td className="measured">{container.pids ?? "—"}</td><td><div className="row-actions"><button className="icon-btn" type="button" title="查看日志" aria-label={`查看 ${container.name} 日志`} disabled={busy !== ""} onClick={() => void showLogs(container)}><ScrollText size={16} /></button>{container.state === "running" ? <><button className="icon-btn" type="button" title="重启容器" aria-label={`重启 ${container.name}`} disabled={busy !== ""} onClick={() => void action(container, "restart")}><RotateCcw size={16} /></button><button className="icon-btn" type="button" title="停止容器" aria-label={`停止 ${container.name}`} disabled={busy !== ""} onClick={() => void action(container, "stop")}><Square size={15} /></button></> : <button className="icon-btn" type="button" title="启动容器" aria-label={`启动 ${container.name}`} disabled={busy !== ""} onClick={() => void action(container, "start")}><Play size={16} /></button>}</div></td></tr>)}</tbody></table></div>}

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Activity, Clock3, HardDrive, List, Power, RefreshCw, ScrollText, Server as ServerIcon, Trash2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime, formatUptime, percent } from "../lib/format";
-import type { ActionResult, ConnectionReport, QuickAction, Server, ServerMetrics, TrustedExecutor } from "../types";
+import type { ActionResult, ConnectionReport, MonthlyTrafficReport, QuickAction, Server, ServerMetrics, TrustedExecutor } from "../types";
 import { ConnectionDiagnostics } from "./ConnectionDiagnostics";
 import { FileManager } from "./FileManager";
 import { DockerManager } from "./DockerManager";
@@ -46,7 +46,7 @@ export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, met
         <button className="tab" type="button" role="tab" aria-selected={tab === "protection"} onClick={() => onTabChange("protection")}>数据保护</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "actions"} onClick={() => onTabChange("actions")}>快捷运维</button>
       </div>
-      {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
+      {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} trusted={trusted} />}
       {tab === "diagnostics" && <ConnectionDiagnostics report={diagnostics} error={metricsError} busy={refreshing} onRun={onDiagnose} />}
       {tab === "provision" && <ServerBenchmarkPanel server={server} trusted={trusted} onOpenRunbooks={onOpenRunbooks} />}
       {tab === "live" && <LiveOpsPanel server={server} trusted={trusted} />}
@@ -59,7 +59,42 @@ export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, met
   );
 }
 
-function OverviewTab({ server, metrics, error, onRefresh, refreshing }: { server: Server; metrics?: ServerMetrics; error?: string; onRefresh: () => void; refreshing: boolean }) {
+function OverviewTab({ server, metrics, error, onRefresh, refreshing, trusted }: { server: Server; metrics?: ServerMetrics; error?: string; onRefresh: () => void; refreshing: boolean; trusted: TrustedExecutor }) {
+  const [traffic, setTraffic] = useState<MonthlyTrafficReport>();
+  const [trafficBusy, setTrafficBusy] = useState(false);
+  const [trafficError, setTrafficError] = useState("");
+  const [quotaInput, setQuotaInput] = useState("");
+
+  const loadTraffic = async () => {
+    setTrafficBusy(true);
+    setTrafficError("");
+    try {
+      const report = await trusted(server, (allow) => api.getMonthlyTraffic(server.id, allow));
+      setTraffic(report);
+      setQuotaInput(report.quotaGb ? String(report.quotaGb) : "");
+    } catch (reason) {
+      setTrafficError(errorMessage(reason));
+    } finally {
+      setTrafficBusy(false);
+    }
+  };
+
+  const saveQuota = async () => {
+    setTrafficBusy(true);
+    setTrafficError("");
+    try {
+      const parsed = Number(quotaInput);
+      const quota = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+      await api.setTrafficQuotaGb(server.id, quota);
+      const report = await trusted(server, (allow) => api.getMonthlyTraffic(server.id, allow));
+      setTraffic(report);
+    } catch (reason) {
+      setTrafficError(errorMessage(reason));
+    } finally {
+      setTrafficBusy(false);
+    }
+  };
+
   if (!metrics) {
     return <div className="empty"><div><Activity size={30} /><h2>尚未采集运行指标</h2><p>{error ?? "通过 SSH 读取 Linux 系统指标，不需要安装 Agent。"}</p><button className="btn btn-primary" type="button" onClick={onRefresh} disabled={refreshing}>立即检查</button></div></div>;
   }
@@ -73,6 +108,35 @@ function OverviewTab({ server, metrics, error, onRefresh, refreshing }: { server
     {error && <div className="error-banner" role="alert">{error}</div>}
     <div className="metric-grid">
       {values.map((item) => <div className="metric" key={item.label}><small>{item.label}</small><strong className="metric-value">{item.value}</strong><small>{item.note}</small>{item.used !== null && <progress max={100} value={item.used} aria-label={`${item.label} 使用率`} />}</div>)}
+    </div>
+    <div className="panel panel-body mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <strong className="text-sm">月度流量与配额预警</strong>
+          <span className="table-meta ml-2">{traffic ? `${traffic.interface} · 数据源 ${traffic.source === "vnstat" ? "vnstat 本月统计" : "/proc/net/dev 网卡累计"}` : "按需通过 SSH 读取网卡流量（优先 vnstat）"}</span>
+        </div>
+        <div className="row-actions">
+          <input className="input" style={{ width: 110 }} type="number" min={0} step={50} value={quotaInput} onChange={(e) => setQuotaInput(e.target.value)} placeholder="配额 GB" aria-label="月度流量配额 (GB)" />
+          <button className="btn" type="button" disabled={trafficBusy} onClick={() => void saveQuota()}>保存配额</button>
+          <button className="btn" type="button" disabled={trafficBusy} onClick={() => void loadTraffic()}><RefreshCw size={14} />{trafficBusy ? "采集中" : "采集流量"}</button>
+        </div>
+      </div>
+      {trafficError && <div className="error-banner mt-3" role="alert">{trafficError}</div>}
+      {traffic && (
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm mb-2">
+            <span>入站 <strong>{formatBytes(traffic.rxBytes)}</strong> · 出站 <strong>{formatBytes(traffic.txBytes)}</strong> · 合计 <strong>{formatBytes(traffic.totalBytes)}</strong></span>
+            {traffic.usedPercent != null ? (
+              <span className={traffic.warning ? "badge badge-warn" : "badge badge-ok"}>
+                已用 {traffic.usedPercent.toFixed(1)}% / {traffic.quotaGb} GB{traffic.warning ? "（配额预警）" : ""}
+              </span>
+            ) : (
+              <span className="table-meta">未设置月配额</span>
+            )}
+          </div>
+          {traffic.usedPercent != null && <progress max={100} value={Math.min(100, traffic.usedPercent)} style={{ width: "100%" }} aria-label="月度流量使用率" />}
+        </div>
+      )}
     </div>
     <dl className="facts">
       <div><dt>主机名</dt><dd>{metrics.hostname}</dd></div>

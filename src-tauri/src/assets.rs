@@ -314,6 +314,9 @@ fn fetch(account: &CloudAccount) -> AppResult<Vec<CloudResource>> {
     match account.provider {
         CloudProvider::DigitalOcean => fetch_digitalocean(&client, &token),
         CloudProvider::Tailscale => fetch_tailscale(&client, &token),
+        CloudProvider::Hetzner => fetch_hetzner(&client, &token),
+        CloudProvider::Cloudflare => fetch_cloudflare(&client, &token),
+        CloudProvider::Vultr => fetch_vultr(&client, &token),
     }
 }
 
@@ -528,6 +531,9 @@ fn provider_label(provider: CloudProvider) -> &'static str {
     match provider {
         CloudProvider::DigitalOcean => "DigitalOcean",
         CloudProvider::Tailscale => "Tailscale",
+        CloudProvider::Hetzner => "Hetzner Cloud",
+        CloudProvider::Cloudflare => "Cloudflare",
+        CloudProvider::Vultr => "Vultr",
     }
 }
 
@@ -693,5 +699,293 @@ struct TailscaleDevice {
     hostname: Option<String>,
     addresses: Vec<String>,
     online: Option<bool>,
+    tags: Option<Vec<String>>,
+}
+
+fn fetch_hetzner(client: &Client, token: &str) -> AppResult<Vec<CloudResource>> {
+    let base = api_base("CONTROLVPS_HETZNER_API", "https://api.hetzner.cloud");
+    let mut resources = Vec::new();
+    for page_num in 1..=20u32 {
+        let url = format!("{base}/v1/servers?per_page=50&page={page_num}");
+        let response = client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| AppError::Message(format!("Hetzner Cloud 请求失败：{error}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::Message(format!(
+                "Hetzner Cloud 返回 HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+        let page: HetznerServersPage = response
+            .json()
+            .map_err(|error| AppError::Message(format!("无法解析 Hetzner Cloud 响应：{error}")))?;
+        for server in page.servers {
+            let host = server
+                .public_net
+                .as_ref()
+                .and_then(|net| {
+                    net.ipv4
+                        .as_ref()
+                        .map(|v4| v4.ip.clone())
+                        .or_else(|| net.ipv6.as_ref().map(|v6| v6.ip.split('/').next().unwrap_or(&v6.ip).to_string()))
+                })
+                .unwrap_or_default();
+            let region = server
+                .datacenter
+                .as_ref()
+                .and_then(|dc| dc.location.as_ref().map(|loc| loc.name.clone()).or_else(|| Some(dc.name.clone())));
+            let spec = server
+                .server_type
+                .as_ref()
+                .map(|st| format!("{} · {} vCPU · {:.0} GB · {} GB", st.name, st.cores, st.memory, st.disk))
+                .unwrap_or_else(|| "Hetzner Cloud".into());
+            let mut tags: Vec<String> = server
+                .labels
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| if v.is_empty() { k } else { format!("{k}:{v}") })
+                .collect();
+            tags.sort();
+            resources.push(CloudResource {
+                provider: CloudProvider::Hetzner,
+                resource_id: server.id.to_string(),
+                name: server.name,
+                host,
+                region,
+                status: server.status,
+                tags,
+                detail: spec,
+            });
+        }
+        let has_next = page
+            .meta
+            .and_then(|m| m.pagination)
+            .and_then(|p| p.next_page)
+            .is_some();
+        if !has_next {
+            break;
+        }
+    }
+    Ok(resources)
+}
+
+fn fetch_cloudflare(client: &Client, token: &str) -> AppResult<Vec<CloudResource>> {
+    let base = api_base("CONTROLVPS_CLOUDFLARE_API", "https://api.cloudflare.com");
+    let accounts_resp = client
+        .get(format!("{base}/client/v4/accounts?per_page=20"))
+        .bearer_auth(token)
+        .send()
+        .map_err(|error| AppError::Message(format!("Cloudflare 请求失败：{error}")))?;
+    if !accounts_resp.status().is_success() {
+        return Err(AppError::Message(format!(
+            "Cloudflare 返回 HTTP {}（需要 Account:Cloudflare Tunnel:Read 权限的 API Token）",
+            accounts_resp.status().as_u16()
+        )));
+    }
+    let accounts_page: CloudflareAccountsPage = accounts_resp
+        .json()
+        .map_err(|error| AppError::Message(format!("无法解析 Cloudflare 账户列表：{error}")))?;
+
+    let mut resources = Vec::new();
+    for acct in accounts_page.result.into_iter().take(5) {
+        let tunnels_resp = client
+            .get(format!(
+                "{base}/client/v4/accounts/{}/cfd_tunnel?is_deleted=false&per_page=100",
+                acct.id
+            ))
+            .bearer_auth(token)
+            .send();
+        let Ok(resp) = tunnels_resp else { continue };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(page) = resp.json::<CloudflareTunnelsPage>() else {
+            continue;
+        };
+        for tunnel in page.result {
+            let conn_count = tunnel.connections.as_ref().map(|c| c.len()).unwrap_or(0);
+            let colos = tunnel
+                .connections
+                .as_ref()
+                .map(|conns| {
+                    let mut list: Vec<String> = conns
+                        .iter()
+                        .filter_map(|c| c.colo_name.clone())
+                        .collect();
+                    list.sort();
+                    list.dedup();
+                    list.join(",")
+                })
+                .filter(|s| !s.is_empty());
+            resources.push(CloudResource {
+                provider: CloudProvider::Cloudflare,
+                resource_id: tunnel.id.clone(),
+                name: tunnel.name,
+                host: format!("{}.cfargotunnel.com", tunnel.id),
+                region: colos,
+                status: tunnel.status.unwrap_or_else(|| "unknown".into()),
+                tags: vec!["cloudflare-tunnel".into(), acct.name.clone()],
+                detail: format!("Cloudflare Tunnel · {} 条活跃连接", conn_count),
+            });
+        }
+    }
+    Ok(resources)
+}
+
+fn fetch_vultr(client: &Client, token: &str) -> AppResult<Vec<CloudResource>> {
+    let base = api_base("CONTROLVPS_VULTR_API", "https://api.vultr.com");
+    let response = client
+        .get(format!("{base}/v2/instances?per_page=200"))
+        .bearer_auth(token)
+        .send()
+        .map_err(|error| AppError::Message(format!("Vultr 请求失败：{error}")))?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(format!(
+            "Vultr 返回 HTTP {}",
+            response.status().as_u16()
+        )));
+    }
+    let page: VultrInstancesPage = response
+        .json()
+        .map_err(|error| AppError::Message(format!("无法解析 Vultr 响应：{error}")))?;
+    Ok(page
+        .instances
+        .into_iter()
+        .map(|inst| {
+            let host = if !inst.main_ip.is_empty() && inst.main_ip != "0.0.0.0" {
+                inst.main_ip
+            } else {
+                inst.v6_main_ip.unwrap_or_default()
+            };
+            CloudResource {
+                provider: CloudProvider::Vultr,
+                resource_id: inst.id,
+                name: if inst.label.trim().is_empty() {
+                    inst.hostname.unwrap_or_else(|| "vultr-instance".into())
+                } else {
+                    inst.label
+                },
+                host,
+                region: inst.region,
+                status: inst.status.unwrap_or_else(|| "unknown".into()),
+                tags: inst.tags.unwrap_or_default(),
+                detail: format!(
+                    "{} · {} vCPU · {} MiB · {} GB",
+                    inst.os.unwrap_or_else(|| "Linux".into()),
+                    inst.vcpu_count.unwrap_or(0),
+                    inst.ram.unwrap_or(0),
+                    inst.disk.unwrap_or(0)
+                ),
+            }
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct HetznerServersPage {
+    servers: Vec<HetznerServer>,
+    meta: Option<HetznerMeta>,
+}
+
+#[derive(Deserialize)]
+struct HetznerMeta {
+    pagination: Option<HetznerPagination>,
+}
+
+#[derive(Deserialize)]
+struct HetznerPagination {
+    next_page: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct HetznerServer {
+    id: u64,
+    name: String,
+    status: String,
+    public_net: Option<HetznerPublicNet>,
+    server_type: Option<HetznerServerType>,
+    datacenter: Option<HetznerDatacenter>,
+    labels: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct HetznerPublicNet {
+    ipv4: Option<HetznerIp>,
+    ipv6: Option<HetznerIp>,
+}
+
+#[derive(Deserialize)]
+struct HetznerIp {
+    ip: String,
+}
+
+#[derive(Deserialize)]
+struct HetznerServerType {
+    name: String,
+    cores: u64,
+    memory: f64,
+    disk: u64,
+}
+
+#[derive(Deserialize)]
+struct HetznerDatacenter {
+    name: String,
+    location: Option<HetznerLocation>,
+}
+
+#[derive(Deserialize)]
+struct HetznerLocation {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CloudflareAccountsPage {
+    result: Vec<CloudflareAccount>,
+}
+
+#[derive(Deserialize)]
+struct CloudflareAccount {
+    id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CloudflareTunnelsPage {
+    result: Vec<CloudflareTunnel>,
+}
+
+#[derive(Deserialize)]
+struct CloudflareTunnel {
+    id: String,
+    name: String,
+    status: Option<String>,
+    connections: Option<Vec<CloudflareTunnelConn>>,
+}
+
+#[derive(Deserialize)]
+struct CloudflareTunnelConn {
+    colo_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct VultrInstancesPage {
+    instances: Vec<VultrInstance>,
+}
+
+#[derive(Deserialize)]
+struct VultrInstance {
+    id: String,
+    label: String,
+    hostname: Option<String>,
+    main_ip: String,
+    v6_main_ip: Option<String>,
+    region: Option<String>,
+    status: Option<String>,
+    os: Option<String>,
+    vcpu_count: Option<u64>,
+    ram: Option<u64>,
+    disk: Option<u64>,
     tags: Option<Vec<String>>,
 }

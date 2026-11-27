@@ -351,6 +351,101 @@ pub fn parse_ps_output(raw: &str) -> Vec<ProcessEntry> {
     entries
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyTrafficReport {
+    pub interface: String,
+    pub source: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub total_bytes: u64,
+    pub quota_gb: Option<f64>,
+    pub used_percent: Option<f64>,
+    pub warning: bool,
+}
+
+pub fn collect_monthly_traffic(
+    session: &Session,
+    quota_gb: Option<f64>,
+) -> AppResult<MonthlyTrafficReport> {
+    let script = r#"
+if command -v vnstat >/dev/null 2>&1; then
+  VN=$(vnstat --json m 1 2>/dev/null || true)
+  if [ -n "$VN" ]; then
+    printf '__VNSTAT__\n%s\n' "$VN"
+    exit 0
+  fi
+fi
+IFACE=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+if [ -z "$IFACE" ]; then
+  IFACE=$(awk -F: 'NR>2 && $1 !~ /lo|docker|br-|veth|virbr|tailscale/ {gsub(/ /,"",$1); print $1; exit}' /proc/net/dev 2>/dev/null)
+fi
+if [ -n "$IFACE" ]; then
+  LINE=$(awk -v dev="$IFACE" -F'[: ]+' '$1==dev || $2==dev {if($1=="") print $3, $11; else print $2, $10; exit}' /proc/net/dev 2>/dev/null)
+  printf '__PROC__\n%s %s\n' "$IFACE" "$LINE"
+fi
+"#;
+    let output = ssh::execute(session, script)?;
+    Ok(parse_traffic_output(&output.stdout, quota_gb))
+}
+
+pub fn parse_traffic_output(raw: &str, quota_gb: Option<f64>) -> MonthlyTrafficReport {
+    let mut iface = "eth0".to_string();
+    let mut source = "proc_net_dev".to_string();
+    let mut rx_bytes = 0u64;
+    let mut tx_bytes = 0u64;
+
+    if let Some(rest) = raw.strip_prefix("__VNSTAT__\n").or_else(|| raw.split("__VNSTAT__\n").nth(1)) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(rest.trim()) {
+            if let Some(first) = json
+                .get("interfaces")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+            {
+                if let Some(name) = first.get("name").and_then(|v| v.as_str()) {
+                    iface = name.to_string();
+                }
+                if let Some(month) = first
+                    .get("traffic")
+                    .and_then(|t| t.get("month"))
+                    .and_then(|m| m.as_array())
+                    .and_then(|arr| arr.last())
+                {
+                    rx_bytes = month.get("rx").and_then(|v| v.as_u64()).unwrap_or(0);
+                    tx_bytes = month.get("tx").and_then(|v| v.as_u64()).unwrap_or(0);
+                    source = "vnstat".to_string();
+                }
+            }
+        }
+    } else if let Some(rest) = raw.split("__PROC__\n").nth(1) {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        if parts.len() >= 3 {
+            iface = parts[0].to_string();
+            rx_bytes = parts[1].parse::<u64>().unwrap_or(0);
+            tx_bytes = parts[2].parse::<u64>().unwrap_or(0);
+            source = "proc_net_dev".to_string();
+        }
+    }
+
+    let total_bytes = rx_bytes.saturating_add(tx_bytes);
+    let used_percent = quota_gb.filter(|q| *q > 0.0).map(|q| {
+        let quota_bytes = q * 1024.0 * 1024.0 * 1024.0;
+        ((total_bytes as f64 / quota_bytes) * 100.0).min(999.9)
+    });
+    let warning = used_percent.is_some_and(|pct| pct >= 80.0);
+
+    MonthlyTrafficReport {
+        interface: iface,
+        source,
+        rx_bytes,
+        tx_bytes,
+        total_bytes,
+        quota_gb,
+        used_percent,
+        warning,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +474,16 @@ mod tests {
         .unwrap();
         assert!(cmd.contains("tail -n 50 -F"));
         assert!(cmd.contains("/var/log/nginx/error.log"));
+    }
+
+    #[test]
+    fn parses_monthly_traffic_from_vnstat_and_proc() {
+        let proc_out = "__PROC__\nens3 107374182400 214748364800\n";
+        let report = parse_traffic_output(proc_out, Some(300.0));
+        assert_eq!(report.interface, "ens3");
+        assert_eq!(report.source, "proc_net_dev");
+        assert_eq!(report.total_bytes, 322_122_547_200);
+        assert!(report.warning);
+        assert!((report.used_percent.unwrap() - 100.0).abs() < 0.1);
     }
 }

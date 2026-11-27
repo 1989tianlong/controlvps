@@ -33,6 +33,7 @@ import type {
   DealFeed,
   LogStreamSource,
   McpApprovalRequest,
+  MonthlyTrafficReport,
   NotificationChannel,
   NotificationChannelInput,
   NotificationDelivery,
@@ -179,7 +180,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.14.0",
+        version: "1.15.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "系统钥匙串",
@@ -424,6 +425,10 @@ export const api = {
     call<ByoSyncStatus>("update_byo_sync_config", { folderPath, includeCredentials }),
   byoSyncPush: (password: string) => call<ByoSyncStatus>("byo_sync_push", { password }),
   byoSyncPull: (password: string) => call<BackupRestoreResult>("byo_sync_pull", { password }),
+  getMonthlyTraffic: (id: string, allowUnknownHost = false) =>
+    call<MonthlyTrafficReport>("get_monthly_traffic", { id, allowUnknownHost }),
+  setTrafficQuotaGb: (id: string, quotaGb?: number) =>
+    call<number | null>("set_traffic_quota_gb", { id, quotaGb }),
 };
 
 export async function openExternal(url: string) {
