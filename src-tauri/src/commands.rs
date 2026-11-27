@@ -4,6 +4,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::ai_assistant;
 use crate::alerts::{self, AlertRegistry};
 use crate::batch;
 use crate::compose;
@@ -15,22 +16,24 @@ use crate::files;
 use crate::metrics;
 use crate::recording::{RecordingDetail, RecordingSummary};
 use crate::models::{
-    ActionCenterSummary, ActionResult, AlertEvent, AuthMethod, AuthProfile, AuthProfileInput,
-    BackupPreview, BackupRestoreResult, BackupSummary, BatchResult, CloudAccount,
+    ActionCenterSummary, ActionResult, AiActionProposal, AiChatRequest, AiChatResponse,
+    AiProposalExecutionResult, AiSettings, AiSettingsInput, AlertEvent, AuthMethod, AuthProfile,
+    AuthProfileInput, BackupPreview, BackupRestoreResult, BackupSummary, BatchResult, CloudAccount,
     CloudAccountInput, CloudImportRequest, CloudImportResult, CloudPreview, ComposeAction,
     ComposeActionResult, ComposeApplication, ComposeDeploymentHistory, ComposeDeploymentPlan,
     ComposeDeploymentResult, ComposeEditInput, ComposeLogs, ComposeOverview, ConnectionReport,
     ConnectionTest, DataProtectionInput, DataProtectionOverview, DataProtectionPolicy,
     DataProtectionRestoreResult, DataProtectionRun, DockerAction, DockerActionResult, DockerLogs,
-    DockerOverview, FileListing, FileTransfer, FileTransferKind, FileTransferTask, McpCallRecord,
-    McpSettingsInput, MetricSample, MonitoringSettings, NotificationChannel,
-    NotificationChannelInput, NotificationDelivery, OperationLog, PortForwardInput,
-    PortForwardRule, QuickAction, Runbook, RunbookExecution, RunbookExecutionRequest, RunbookInput,
-    RunbookResult, RunbookSchedule, RunbookScheduleInput, RunbookTrigger, SecurityReport, Server,
-    ServerGroup, ServerGroupInput, ServerInput, ServerMetrics, ServiceCheckResult, ServiceEvent,
-    ServiceMonitorInput, ServiceMonitorView, ServiceNotificationInput, ServiceNotificationSettings,
-    ServiceSample, Snippet, SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult,
-    SystemdLogs, SystemdOverview, TerminalSession, TunnelStatus,
+    DockerOverview, FileListing, FileTransfer, FileTransferKind, FileTransferTask,
+    McpApprovalRequest, McpCallRecord, McpSettingsInput, MetricSample, MonitoringSettings,
+    NotificationChannel, NotificationChannelInput, NotificationDelivery, OperationLog,
+    PortForwardInput, PortForwardRule, QuickAction, Runbook, RunbookExecution,
+    RunbookExecutionRequest, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
+    RunbookTrigger, SecurityReport, Server, ServerGroup, ServerGroupInput, ServerInput,
+    ServerMetrics, ServiceCheckResult, ServiceEvent, ServiceMonitorInput, ServiceMonitorView,
+    ServiceNotificationInput, ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput,
+    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
+    TerminalSession, TunnelStatus,
 };
 use crate::mcp::{McpServer, McpStatus};
 use crate::notifications;
@@ -2047,6 +2050,63 @@ pub fn clear_notification_deliveries(db: State<'_, Database>) -> CommandResult<(
 #[tauri::command]
 pub fn get_action_center(db: State<'_, Database>) -> CommandResult<ActionCenterSummary> {
     db.action_center_summary().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_pending_mcp_approvals(server: State<'_, McpServer>) -> Vec<McpApprovalRequest> {
+    server.pending_approvals()
+}
+
+#[tauri::command]
+pub fn resolve_mcp_approval(
+    server: State<'_, McpServer>,
+    id: String,
+    approved: bool,
+) -> bool {
+    server.resolve_approval(&id, approved)
+}
+
+#[tauri::command]
+pub fn get_ai_settings(db: State<'_, Database>) -> CommandResult<AiSettings> {
+    ai_assistant::get_settings(&db).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_ai_settings(
+    db: State<'_, Database>,
+    input: AiSettingsInput,
+) -> CommandResult<AiSettings> {
+    ai_assistant::update_settings(&db, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn test_ai_connection(db: State<'_, Database>) -> CommandResult<String> {
+    let database = db.inner().clone();
+    run_blocking(move || ai_assistant::test_connection(&database)).await
+}
+
+#[tauri::command]
+pub async fn ai_chat(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    registry: State<'_, RunbookExecutionRegistry>,
+    request: AiChatRequest,
+) -> CommandResult<AiChatResponse> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    let registry = registry.inner().clone();
+    run_blocking(move || ai_assistant::chat(&database, &known_hosts, &registry, &request)).await
+}
+
+#[tauri::command]
+pub async fn execute_ai_proposal(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    proposal: AiActionProposal,
+) -> CommandResult<AiProposalExecutionResult> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || ai_assistant::execute_proposal(&database, &known_hosts, &proposal)).await
 }
 
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {

@@ -502,14 +502,35 @@ pub struct OperationLog {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpWritePolicy {
+    #[default]
+    ReadOnly,
+    Confirm,
+    Allow,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpSettings {
     pub enabled: bool,
     pub port: u16,
     pub allow_execute: bool,
+    #[serde(default)]
+    pub write_policy: Option<McpWritePolicy>,
     pub allow_unknown_host: bool,
     pub token: String,
+}
+
+impl McpSettings {
+    pub fn effective_write_policy(&self) -> McpWritePolicy {
+        self.write_policy.unwrap_or(if self.allow_execute {
+            McpWritePolicy::Allow
+        } else {
+            McpWritePolicy::ReadOnly
+        })
+    }
 }
 
 impl Default for McpSettings {
@@ -518,6 +539,7 @@ impl Default for McpSettings {
             enabled: false,
             port: 8799,
             allow_execute: false,
+            write_policy: Some(McpWritePolicy::ReadOnly),
             allow_unknown_host: false,
             token: String::new(),
         }
@@ -529,8 +551,24 @@ impl Default for McpSettings {
 pub struct McpSettingsInput {
     pub enabled: bool,
     pub port: u16,
+    #[serde(default)]
     pub allow_execute: bool,
+    #[serde(default)]
+    pub write_policy: Option<McpWritePolicy>,
     pub allow_unknown_host: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpApprovalRequest {
+    pub id: String,
+    pub tool: String,
+    pub title: String,
+    pub target: String,
+    pub command: String,
+    pub dangerous: bool,
+    pub created_at: String,
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1568,4 +1606,126 @@ pub struct ActionCenterSummary {
     pub failed_runbooks: Vec<FailedRunbookItem>,
     pub enabled_notification_channels: usize,
     pub scheduled_backup_policies: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    #[default]
+    OpenAiCompatible,
+    Anthropic,
+    Ollama,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AiPermissionMode {
+    Observer,
+    #[default]
+    Confirm,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettings {
+    pub enabled: bool,
+    pub provider: AiProvider,
+    pub base_url: String,
+    pub model: String,
+    pub permission_mode: AiPermissionMode,
+    #[serde(default)]
+    pub has_api_key: bool,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: AiProvider::OpenAiCompatible,
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            permission_mode: AiPermissionMode::Confirm,
+            has_api_key: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettingsInput {
+    pub enabled: bool,
+    pub provider: AiProvider,
+    pub base_url: String,
+    pub model: String,
+    pub permission_mode: AiPermissionMode,
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub clear_api_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiToolTrace {
+    pub tool: String,
+    pub target: String,
+    pub success: bool,
+    pub summary: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProposalKind {
+    RunCommand,
+    RunBatchCommand,
+    SaveRunbook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiActionProposal {
+    pub id: String,
+    pub kind: AiProposalKind,
+    pub title: String,
+    pub rationale: String,
+    pub server: Option<String>,
+    #[serde(default)]
+    pub servers: Vec<String>,
+    pub command: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<RunbookStepInput>,
+    pub dangerous: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatRequest {
+    pub messages: Vec<AiChatMessage>,
+    pub context_server_id: Option<String>,
+    pub context_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatResponse {
+    pub reply: String,
+    pub tool_traces: Vec<AiToolTrace>,
+    pub proposals: Vec<AiActionProposal>,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProposalExecutionResult {
+    pub success: bool,
+    pub summary: String,
+    pub output: String,
+    pub created_runbook_id: Option<String>,
 }

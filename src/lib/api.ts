@@ -3,6 +3,12 @@ import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import type {
   ActionCenterSummary,
   ActionResult,
+  AiActionProposal,
+  AiChatRequest,
+  AiChatResponse,
+  AiProposalExecutionResult,
+  AiSettings,
+  AiSettingsInput,
   AlertEvent,
   AppInfo,
   BatchResult,
@@ -24,6 +30,7 @@ import type {
   DataProtectionRestoreResult,
   DataProtectionRun,
   DealFeed,
+  McpApprovalRequest,
   NotificationChannel,
   NotificationChannelInput,
   NotificationDelivery,
@@ -109,7 +116,17 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls", "list_notification_channels", "list_notification_deliveries"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls", "list_notification_channels", "list_notification_deliveries", "list_pending_mcp_approvals"].includes(command)) return [] as T;
+    if (command === "get_ai_settings") {
+      return {
+        enabled: false,
+        provider: "open_ai_compatible",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
+        permissionMode: "confirm",
+        hasApiKey: false,
+      } as T;
+    }
     if (command === "get_action_center") {
       return {
         expiringServers: [],
@@ -127,6 +144,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
         enabled: false,
         port: 8799,
         allowExecute: false,
+        writePolicy: "read_only",
         allowUnknownHost: false,
         token: "",
         running: false,
@@ -153,7 +171,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.11.0",
+        version: "1.12.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "系统钥匙串",
@@ -365,6 +383,14 @@ export const api = {
     call<NotificationDelivery[]>("list_notification_deliveries", { limit }),
   clearNotificationDeliveries: () => call<void>("clear_notification_deliveries"),
   actionCenter: () => call<ActionCenterSummary>("get_action_center"),
+  listPendingMcpApprovals: () => call<McpApprovalRequest[]>("list_pending_mcp_approvals"),
+  resolveMcpApproval: (id: string, approved: boolean) => call<boolean>("resolve_mcp_approval", { id, approved }),
+  getAiSettings: () => call<AiSettings>("get_ai_settings"),
+  updateAiSettings: (input: AiSettingsInput) => call<AiSettings>("update_ai_settings", { input }),
+  testAiConnection: () => call<string>("test_ai_connection"),
+  aiChat: (request: AiChatRequest) => call<AiChatResponse>("ai_chat", { request }),
+  executeAiProposal: (proposal: AiActionProposal) =>
+    call<AiProposalExecutionResult>("execute_ai_proposal", { proposal }),
 };
 
 export async function openExternal(url: string) {

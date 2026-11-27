@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { Activity, Bot, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, MonitorPlay, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import { Activity, Bot, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, MonitorPlay, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, Sparkles, TerminalSquare, X } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
@@ -12,6 +12,10 @@ import { OverviewPage } from "./components/OverviewPage";
 import type { TerminalRequest } from "./components/TerminalWorkspace";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useAppUpdate } from "./hooks/useAppUpdate";
+import { McpApprovalDialog } from "./components/McpApprovalDialog";
+import type { AiPromptPreset } from "./components/AiAssistantDialog";
+
+const AiAssistantDialog = lazy(() => import("./components/AiAssistantDialog").then((m) => ({ default: m.AiAssistantDialog })));
 
 const ServersPage = lazy(() => import("./components/ServersPage").then((m) => ({ default: m.ServersPage })));
 const AssetsPage = lazy(() => import("./components/AssetsPage").then((m) => ({ default: m.AssetsPage })));
@@ -64,6 +68,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Server | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiPreset, setAiPreset] = useState<AiPromptPreset>();
   const { execute, trustDialog } = useHostTrust();
   const appUpdate = useAppUpdate();
   const updateMetrics = useCallback((id: string, value: ServerMetrics) => {
@@ -111,6 +117,27 @@ export default function App() {
     if (page === "terminal") setTerminalVisited(true);
   }, [page]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setAiOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const askAi = useCallback((prompt: string, serverId?: string, contextNote?: string) => {
+    setAiPreset((current) => ({
+      id: (current?.id ?? 0) + 1,
+      prompt,
+      serverId,
+      contextNote,
+    }));
+    setAiOpen(true);
+  }, []);
+
   const navigate = (target: Page) => {
     window.location.hash = `/${target}`;
     setPage(target);
@@ -138,11 +165,11 @@ export default function App() {
       <div className="sidebar-foot"><LockKeyhole size={17} /><p>本地优先，凭据由系统钥匙串保护。</p></div>
     </aside>
     <main className="main-column">
-      <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label">{collecting || serviceMonitoring.checkingIds.length > 0 ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting || serviceMonitoring.checkingIds.length > 0 ? "正在采集监控" : "本地工作区"}</span></header>
+      <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><div className="row-actions"><button className="btn" type="button" onClick={() => setAiOpen(true)}><Sparkles size={14} />AI 助手 ⌘K</button><span className="local-label">{collecting || serviceMonitoring.checkingIds.length > 0 ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting || serviceMonitoring.checkingIds.length > 0 ? "正在采集监控" : "本地工作区"}</span></div></header>
       <div className="page">
         <UpdateBanner state={appUpdate.state} dismissed={appUpdate.dismissed} onInstall={() => void appUpdate.install()} onRestart={() => void appUpdate.restart()} onDismiss={appUpdate.dismiss} />
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
-        {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} onMonitoring={() => navigate("monitoring")} onAutomation={() => { setAutomationMode("operations"); navigate("automation"); }} onSettings={() => navigate("settings")} />}
+        {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} onMonitoring={() => navigate("monitoring")} onAutomation={() => { setAutomationMode("operations"); navigate("automation"); }} onSettings={() => navigate("settings")} onDiagnose={askAi} />}
         <Suspense fallback={<div className="skeleton" />}>
           {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
           {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}
@@ -155,12 +182,18 @@ export default function App() {
           {page === "discover" && <DiscoveryPage />}
           {page === "free" && <FreePage />}
           {page === "activity" && <ActivityPage />}
-          {page === "mcp" && <McpPage />}
+          {page === "mcp" && <McpPage onOpenAssistant={() => setAiOpen(true)} />}
           {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} appUpdate={appUpdate} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
         </Suspense>
       </div>
     </main>
     <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />
+    {aiOpen && (
+      <Suspense fallback={null}>
+        <AiAssistantDialog open={aiOpen} servers={servers} preset={aiPreset} onClose={() => setAiOpen(false)} onOpenSettings={() => navigate("mcp")} />
+      </Suspense>
+    )}
+    <McpApprovalDialog />
     {trustDialog}
   </div>;
 }

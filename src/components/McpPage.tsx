@@ -1,28 +1,68 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, KeyRound, PlugZap, RefreshCw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import { Copy, KeyRound, PlugZap, RefreshCw, Save, ShieldAlert, Sparkles, Trash2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { formatTime } from "../lib/format";
-import type { McpCallRecord, McpSettingsInput, McpStatus } from "../types";
+import type {
+  AiPermissionMode,
+  AiProvider,
+  AiSettings,
+  AiSettingsInput,
+  McpCallRecord,
+  McpSettingsInput,
+  McpStatus,
+  McpWritePolicy,
+} from "../types";
 
-export function McpPage() {
+const defaultAiUrls: Record<AiProvider, string> = {
+  open_ai_compatible: "https://api.openai.com/v1",
+  anthropic: "https://api.anthropic.com",
+  ollama: "http://127.0.0.1:11434/v1",
+};
+
+const defaultAiModels: Record<AiProvider, string> = {
+  open_ai_compatible: "gpt-4o-mini",
+  anthropic: "claude-sonnet-4-20250514",
+  ollama: "qwen2.5-coder:7b",
+};
+
+interface Props {
+  onOpenAssistant?: () => void;
+}
+
+export function McpPage({ onOpenAssistant }: Props) {
   const [status, setStatus] = useState<McpStatus>();
   const [draft, setDraft] = useState<McpSettingsInput>();
+  const [aiSettings, setAiSettings] = useState<AiSettings>();
+  const [aiDraft, setAiDraft] = useState<AiSettingsInput>();
   const [calls, setCalls] = useState<McpCallRecord[]>([]);
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingAi, setSavingAi] = useState(false);
+  const [testingAi, setTestingAi] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    void api.mcpStatus()
-      .then((value) => {
+    void Promise.all([api.mcpStatus(), api.getAiSettings()])
+      .then(([value, ai]) => {
         setStatus(value);
         setDraft({
           enabled: value.enabled,
           port: value.port,
           allowExecute: value.allowExecute,
+          writePolicy: value.writePolicy ?? (value.allowExecute ? "allow" : "read_only"),
           allowUnknownHost: value.allowUnknownHost,
+        });
+        setAiSettings(ai);
+        setAiDraft({
+          enabled: ai.enabled,
+          provider: ai.provider,
+          baseUrl: ai.baseUrl,
+          model: ai.model,
+          permissionMode: ai.permissionMode,
+          apiKey: "",
+          clearApiKey: false,
         });
       })
       .catch((reason) => setError(errorMessage(reason)));
@@ -61,6 +101,7 @@ export function McpPage() {
       enabled: value.enabled,
       port: value.port,
       allowExecute: value.allowExecute,
+      writePolicy: value.writePolicy ?? (value.allowExecute ? "allow" : "read_only"),
       allowUnknownHost: value.allowUnknownHost,
     });
   };
@@ -75,7 +116,12 @@ export function McpPage() {
     setError("");
     setNotice("");
     try {
-      const saved = await api.updateMcpSettings(draft);
+      const writePolicy = draft.writePolicy ?? "read_only";
+      const saved = await api.updateMcpSettings({
+        ...draft,
+        writePolicy,
+        allowExecute: writePolicy !== "read_only",
+      });
       applyStatus(saved);
       setNotice(saved.running ? `MCP 服务已启动：${saved.endpoint}` : "MCP 服务已停止");
       if (saved.error) setError(saved.error);
@@ -83,6 +129,45 @@ export function McpPage() {
       setError(errorMessage(reason));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveAi = async () => {
+    if (!aiDraft) return;
+    setSavingAi(true);
+    setError("");
+    setNotice("");
+    try {
+      const saved = await api.updateAiSettings(aiDraft);
+      setAiSettings(saved);
+      setAiDraft({
+        enabled: saved.enabled,
+        provider: saved.provider,
+        baseUrl: saved.baseUrl,
+        model: saved.model,
+        permissionMode: saved.permissionMode,
+        apiKey: "",
+        clearApiKey: false,
+      });
+      setNotice(saved.enabled ? `应用内 AI 助手已启用（${saved.model}），按 ⌘K / Ctrl+K 即可唤起` : "应用内 AI 助手配置已保存");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setSavingAi(false);
+    }
+  };
+
+  const testAi = async () => {
+    setTestingAi(true);
+    setError("");
+    setNotice("");
+    try {
+      const msg = await api.testAiConnection();
+      setNotice(msg);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setTestingAi(false);
     }
   };
 
@@ -123,6 +208,11 @@ export function McpPage() {
     setNotice("");
   };
 
+  const updateAi = <K extends keyof AiSettingsInput>(key: K, value: AiSettingsInput[K]) => {
+    setAiDraft((current) => current ? { ...current, [key]: value } : current);
+    setNotice("");
+  };
+
   const token = status?.token ?? "";
   const masked = token ? `${token.slice(0, 6)}…${token.slice(-6)}` : "";
   const displayToken = revealed ? token : masked;
@@ -135,15 +225,99 @@ export function McpPage() {
   return <>
     <div className="page-heading">
       <div>
-        <h1>AI 接入</h1>
-        <p>通过 MCP（Model Context Protocol）把本机 ControlVPS 的服务器清单与运维能力交给 Claude Code、Cursor 等 AI 客户端，凭据始终留在本方应用内。</p>
+        <h1>AI 助手与 MCP 接入</h1>
+        <p>既可在应用内按 `⌘K` 直接使用自带模型（BYOK / Ollama）做巡检排障，也可通过 MCP 2.0 带桌面逐次审批开放给 Claude Code、Cursor。</p>
       </div>
-      <button className="btn btn-primary" type="button" onClick={save} disabled={!draft || saving}>
-        <Save size={16} />{saving ? "正在应用" : "保存并应用"}
-      </button>
+      <div className="heading-actions">
+        {onOpenAssistant && (
+          <button className="btn" type="button" onClick={onOpenAssistant}>
+            <Sparkles size={16} />打开 AI 助手 ⌘K
+          </button>
+        )}
+        <button className="btn btn-primary" type="button" onClick={save} disabled={!draft || saving}>
+          <Save size={16} />{saving ? "正在应用" : "保存 MCP 设置"}
+        </button>
+      </div>
     </div>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {notice && <div className="panel panel-body mb-6" role="status">{notice}</div>}
+
+    <section className="panel panel-body mb-6">
+      <div className="section-heading mb-4">
+        <div>
+          <h2><Sparkles size={16} /> 应用内 AI 运维助手（BYOK / Ollama）</h2>
+          <p className="table-meta">复用与 MCP 相同的只读巡检工具；所有写命令均生成待确认卡片，由你审查后执行，API Key 仅存系统钥匙串。</p>
+        </div>
+        <div className="heading-actions">
+          <button className="btn" type="button" disabled={!aiDraft || testingAi || savingAi} onClick={() => void testAi()}>
+            {testingAi ? "测试中" : "测试连接"}
+          </button>
+          <button className="btn btn-primary" type="button" disabled={!aiDraft || savingAi} onClick={() => void saveAi()}>
+            <Save size={15} />{savingAi ? "保存中" : "保存 AI 配置"}
+          </button>
+        </div>
+      </div>
+      {aiDraft && (
+        <div className="form-grid">
+          <div className="field span-2">
+            <label className="check-row">
+              <input type="checkbox" checked={aiDraft.enabled} onChange={(e) => updateAi("enabled", e.target.checked)} />
+              <strong>启用应用内 AI 助手</strong>（默认关闭，仅在你主动提问时发起模型请求）
+            </label>
+          </div>
+          <div className="field">
+            <label htmlFor="ai-provider">模型服务商</label>
+            <select
+              id="ai-provider"
+              className="select w-full"
+              value={aiDraft.provider}
+              onChange={(e) => {
+                const provider = e.target.value as AiProvider;
+                setAiDraft((current) => current ? {
+                  ...current,
+                  provider,
+                  baseUrl: defaultAiUrls[provider],
+                  model: defaultAiModels[provider],
+                } : current);
+              }}
+            >
+              <option value="open_ai_compatible">OpenAI 兼容（OpenAI / DeepSeek / OpenRouter）</option>
+              <option value="anthropic">Anthropic Claude</option>
+              <option value="ollama">本地 Ollama（离线免 Key）</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="ai-permission">AI 权限模式</label>
+            <select
+              id="ai-permission"
+              className="select w-full"
+              value={aiDraft.permissionMode}
+              onChange={(e) => updateAi("permissionMode", e.target.value as AiPermissionMode)}
+            >
+              <option value="confirm">写操作需人工确认（推荐）</option>
+              <option value="observer">仅只读观察（禁止生成执行提议）</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="ai-base-url">Base URL</label>
+            <input id="ai-base-url" className="input" value={aiDraft.baseUrl} onChange={(e) => updateAi("baseUrl", e.target.value)} placeholder={defaultAiUrls[aiDraft.provider]} />
+          </div>
+          <div className="field">
+            <label htmlFor="ai-model">模型名称</label>
+            <input id="ai-model" className="input" value={aiDraft.model} onChange={(e) => updateAi("model", e.target.value)} placeholder={defaultAiModels[aiDraft.provider]} />
+          </div>
+          {aiDraft.provider !== "ollama" && (
+            <div className="field span-2">
+              <label htmlFor="ai-api-key">API Key{aiSettings?.hasApiKey ? "（钥匙串已保存，留空保留原值）" : ""}</label>
+              <input id="ai-api-key" className="input" type="password" autoComplete="off" value={aiDraft.apiKey ?? ""} onChange={(e) => setAiDraft((cur) => cur ? { ...cur, apiKey: e.target.value, clearApiKey: false } : cur)} placeholder={aiSettings?.hasApiKey ? "留空保留原值" : "sk-..."} />
+              {aiSettings?.hasApiKey && (
+                <label className="check-row"><input type="checkbox" checked={Boolean(aiDraft.clearApiKey)} onChange={(e) => updateAi("clearApiKey", e.target.checked)} />清除钥匙串中已保存的 API Key</label>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
 
     <div className="mcp-status panel panel-body">
       <div>
@@ -170,7 +344,7 @@ export function McpPage() {
           </div>
         </div>
         <div className="setting-row">
-          <div><h2>访问令牌</h2><p>每个请求都必须携带 Bearer 令牌。令牌只保存在本机，重置后旧客户端会立即失效。</p></div>
+          <div><h2>访问令牌</h2><p>每个请求都必须携带 Bearer 令牌。令牌保存在系统钥匙串，重置后旧客户端会立即失效。</p></div>
           <div className="setting-actions">
             <code className="measured mcp-token">{revealed ? token : masked}</code>
             <button className="btn" type="button" onClick={() => setRevealed((value) => !value)}><KeyRound size={15} />{revealed ? "隐藏" : "显示"}</button>
@@ -179,8 +353,20 @@ export function McpPage() {
           </div>
         </div>
         <div className="setting-row">
-          <div><h2>允许执行命令与变更</h2><p>开启后 AI 可以执行命令、批量命令和 Runbook，等同于把 root 级操作交给客户端。默认关闭，建议按需临时开启。</p></div>
-          <label className="switch-control"><input type="checkbox" checked={draft.allowExecute} onChange={(event) => update("allowExecute", event.target.checked)} /><span>{draft.allowExecute ? "已允许" : "只读模式"}</span></label>
+          <div><h2>MCP 写操作权限策略</h2><p>推荐选择「逐次弹窗审批」：Claude Code / Cursor 发起命令执行、批量命令或 Runbook 时，会在 ControlVPS 弹出桌面审批卡，人工核对命令后再放行。</p></div>
+          <select
+            className="select justify-self-end"
+            aria-label="MCP 写操作权限策略"
+            value={draft.writePolicy ?? "read_only"}
+            onChange={(event) => {
+              const policy = event.target.value as McpWritePolicy;
+              setDraft((current) => current ? { ...current, writePolicy: policy, allowExecute: policy !== "read_only" } : current);
+            }}
+          >
+            <option value="read_only">只读模式（拒绝写操作）</option>
+            <option value="confirm">逐次弹窗审批（推荐）</option>
+            <option value="allow">自动允许（不弹窗，高风险）</option>
+          </select>
         </div>
         <div className="setting-row">
           <div><h2>自动信任未知主机</h2><p>关闭时，AI 连接未确认过主机密钥的服务器会被拒绝，需要你先在应用内手动连接一次。开启会跳过这层保护，不建议在生产环境使用。</p></div>
@@ -213,7 +399,7 @@ export function McpPage() {
     <section className="mcp-section">
       <div className="mcp-section-head">
         <h2>可用工具</h2>
-        <p>写操作在“只读模式”下会被拒绝，并在调用记录里留下痕迹。</p>
+        <p>写操作受权限策略管控（只读拒绝 / 逐次弹窗审批 / 自动允许），所有调用都会留痕审计。</p>
       </div>
       <div className="table-wrap panel">
         <table className="data-table">
@@ -225,14 +411,14 @@ export function McpPage() {
 
     <section className="mcp-section">
       <div className="mcp-section-head">
-        <h2>最近调用</h2>
-        <p>记录 AI 客户端发起的每一次工具调用，不含命令输出与凭据。</p>
+        <h2>最近 AI / MCP 调用审计</h2>
+        <p>统一记录外部 MCP 客户端与应用内 AI 助手发起的工具调用，不含凭据。</p>
         <div className="setting-actions">
           <button className="btn" type="button" onClick={() => void loadCalls()}><RefreshCw size={15} />刷新</button>
           <button className="btn btn-danger" type="button" onClick={clearCalls} disabled={calls.length === 0}><Trash2 size={15} />清空</button>
         </div>
       </div>
-      {calls.length === 0 ? <div className="empty"><div><PlugZap size={30} /><h2>还没有 AI 调用</h2><p>配置客户端并让它读取服务器清单后，调用记录会出现在这里。</p></div></div> : <div className="table-wrap panel"><table className="data-table"><thead><tr><th>时间</th><th>工具</th><th>对象</th><th>结果</th><th>摘要</th><th>耗时</th></tr></thead><tbody>{calls.map((call) => <tr key={call.id}><td className="log-time">{formatTime(call.createdAt)}</td><td><code>{call.tool}</code></td><td>{call.target || "—"}</td><td><span className={call.success ? "badge badge-ok" : "badge badge-bad"}>{call.success ? "成功" : "失败"}</span></td><td>{call.summary}</td><td className="measured">{call.durationMs} ms</td></tr>)}</tbody></table></div>}
+      {calls.length === 0 ? <div className="empty"><div><PlugZap size={30} /><h2>还没有 AI 调用</h2><p>使用应用内 AI 助手（⌘K）或配置外部 MCP 客户端后，调用记录会出现在这里。</p></div></div> : <div className="table-wrap panel"><table className="data-table"><thead><tr><th>时间</th><th>工具</th><th>对象</th><th>结果</th><th>摘要</th><th>耗时</th></tr></thead><tbody>{calls.map((call) => <tr key={call.id}><td className="log-time">{formatTime(call.createdAt)}</td><td><code>{call.tool}</code></td><td>{call.target || "—"}</td><td><span className={call.success ? "badge badge-ok" : "badge badge-bad"}>{call.success ? "成功" : "失败"}</span></td><td>{call.summary}</td><td className="measured">{call.durationMs} ms</td></tr>)}</tbody></table></div>}
     </section>
   </>;
 }

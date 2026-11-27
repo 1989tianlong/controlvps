@@ -9,18 +9,19 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    ActionCenterSummary, AlertEvent, AlertKind, AlertStatus, AuthProfile, AuthProfileInput,
-    CloudAccount, CloudAccountInput, CloudProvider, DataProtectionAction, DataProtectionInput,
-    DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, ExpiringCertificateItem,
-    ExpiringServerItem, FailedBackupItem, FailedRunbookItem, McpCallRecord, McpSettings,
-    McpSettingsInput, MetricSample, MonitoringSettings, NotificationChannel,
-    NotificationChannelInput, NotificationChannelKind, NotificationDelivery, NotificationEventKind,
-    NotificationSeverity, OperationLog, PortForwardInput, PortForwardRule, ProtectionSourceKind,
-    ResticRepositoryKind, Runbook, RunbookExecution, RunbookExecutionRequest,
-    RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
-    RunbookStep, RunbookTrigger, Server, ServerGroup, ServerGroupInput, ServerInput, ServerMetrics,
-    ServiceEvent, ServiceEventKind, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind,
-    ServiceMonitorView, ServiceProbe, ServiceSample, Snippet, SnippetInput, WorkspaceBackup,
+    ActionCenterSummary, AiSettings, AlertEvent, AlertKind, AlertStatus, AuthProfile,
+    AuthProfileInput, CloudAccount, CloudAccountInput, CloudProvider, DataProtectionAction,
+    DataProtectionInput, DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus,
+    ExpiringCertificateItem, ExpiringServerItem, FailedBackupItem, FailedRunbookItem,
+    McpCallRecord, McpSettings, McpSettingsInput, McpWritePolicy, MetricSample, MonitoringSettings,
+    NotificationChannel, NotificationChannelInput, NotificationChannelKind, NotificationDelivery,
+    NotificationEventKind, NotificationSeverity, OperationLog, PortForwardInput, PortForwardRule,
+    ProtectionSourceKind, ResticRepositoryKind, Runbook, RunbookExecution,
+    RunbookExecutionRequest, RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule,
+    RunbookScheduleInput, RunbookStep, RunbookTrigger, Server, ServerGroup, ServerGroupInput,
+    ServerInput, ServerMetrics, ServiceEvent, ServiceEventKind, ServiceMonitor,
+    ServiceMonitorInput, ServiceMonitorKind, ServiceMonitorView, ServiceProbe, ServiceSample,
+    Snippet, SnippetInput, WorkspaceBackup,
 };
 #[cfg(not(test))]
 use crate::utils;
@@ -2483,16 +2484,37 @@ impl Database {
             ));
         }
         let current = self.mcp_settings()?;
+        let write_policy = input.write_policy.unwrap_or(if input.allow_execute {
+            McpWritePolicy::Allow
+        } else {
+            McpWritePolicy::ReadOnly
+        });
         let mut settings = McpSettings {
             enabled: input.enabled,
             port: input.port,
-            allow_execute: input.allow_execute,
+            allow_execute: write_policy != McpWritePolicy::ReadOnly,
+            write_policy: Some(write_policy),
             allow_unknown_host: input.allow_unknown_host,
             token: String::new(),
         };
         self.store_mcp_settings(&settings)?;
         settings.token = current.token;
         Ok(settings)
+    }
+
+    pub fn ai_settings(&self) -> AppResult<AiSettings> {
+        let raw = self.get_app_setting("ai")?;
+        let settings = match raw {
+            Some(value) => serde_json::from_str::<AiSettings>(&value).unwrap_or_default(),
+            None => AiSettings::default(),
+        };
+        Ok(settings)
+    }
+
+    pub fn save_ai_settings(&self, settings: &AiSettings) -> AppResult<()> {
+        let value = serde_json::to_string(settings)
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        self.set_app_setting("ai", &value)
     }
 
     pub fn rotate_mcp_token(&self) -> AppResult<McpSettings> {

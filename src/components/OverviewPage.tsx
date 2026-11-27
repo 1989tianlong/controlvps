@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, BellRing, CheckCircle2, Compass, FolderArchive, Plus, RefreshCw, Server as ServerIcon, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
+import { ArrowRight, BellRing, CheckCircle2, Compass, FolderArchive, Plus, RefreshCw, Server as ServerIcon, ShieldAlert, ShieldCheck, Sparkles, TriangleAlert } from "lucide-react";
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
 import type { ActionCenterSummary, Server, ServerMetrics } from "../types";
@@ -14,6 +14,7 @@ interface Props {
   onMonitoring: () => void;
   onAutomation: () => void;
   onSettings: () => void;
+  onDiagnose?: (prompt: string, serverId?: string, contextNote?: string) => void;
 }
 
 function currencySymbol(currency: string) {
@@ -37,6 +38,7 @@ export function OverviewPage({
   onMonitoring,
   onAutomation,
   onSettings,
+  onDiagnose,
 }: Props) {
   const [actionCenter, setActionCenter] = useState<ActionCenterSummary>();
   const [refreshingTodos, setRefreshingTodos] = useState(false);
@@ -126,7 +128,14 @@ export function OverviewPage({
                   <strong>{alert.serverName}</strong>
                   <span className="table-meta">{alert.message} · {formatTime(alert.createdAt)}</span>
                 </div>
-                <button className="btn" type="button" onClick={onMonitoring}>查看监控</button>
+                <div className="row-actions">
+                  {onDiagnose && (
+                    <button className="btn" type="button" onClick={() => onDiagnose(`请诊断 ${alert.serverName} 触发的主机告警原因，并给出安全的排查或修复命令。`, alert.serverId, alert.message)}>
+                      <Sparkles size={14} />AI 诊断
+                    </button>
+                  )}
+                  <button className="btn" type="button" onClick={onMonitoring}>查看监控</button>
+                </div>
               </div>
             ))}
             {actionCenter.activeServiceEvents.slice(0, 5).map((event) => (
@@ -136,7 +145,14 @@ export function OverviewPage({
                   <strong>{event.monitorName}</strong>
                   <span className="table-meta">{event.message} · {formatTime(event.createdAt)}</span>
                 </div>
-                <button className="btn" type="button" onClick={onMonitoring}>查看探测</button>
+                <div className="row-actions">
+                  {onDiagnose && (
+                    <button className="btn" type="button" onClick={() => onDiagnose(`服务监控「${event.monitorName}」出现异常：${event.message}，请帮我排查原因。`, undefined, event.message)}>
+                      <Sparkles size={14} />AI 诊断
+                    </button>
+                  )}
+                  <button className="btn" type="button" onClick={onMonitoring}>查看探测</button>
+                </div>
               </div>
             ))}
             {actionCenter.expiringCertificates.slice(0, 5).map((cert) => (

@@ -1,12 +1,17 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::batch;
 use crate::db::Database;
@@ -15,7 +20,8 @@ use crate::docker;
 use crate::error::AppError;
 use crate::metrics;
 use crate::models::{
-    McpCallRecord, McpSettings, PortForwardKind, RunbookExecutionRequest, RunbookTrigger, Server,
+    McpApprovalRequest, McpCallRecord, McpSettings, McpWritePolicy, PortForwardKind,
+    RunbookExecutionRequest, RunbookTrigger, Server,
 };
 use crate::runbook::{self, RunbookExecutionRegistry};
 use crate::security;
@@ -28,6 +34,7 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 16;
 const MAX_OUTPUT_CHARS: usize = 60_000;
+const APPROVAL_TIMEOUT_SECS: u64 = 90;
 
 const INSTRUCTIONS: &str = "ControlVPS 是运行在用户本机的 VPS 管理应用。你可以通过工具读取服务器清单、采集指标、执行命令、批量运维、诊断连接、巡检 systemd 与 Docker、做安全审计、查看隧道与 Runbook、检索 VPS 优惠和操作记录。\
 服务器必须先在应用内添加；遇到未知主机密钥时，需要用户先在应用界面手动连接一次完成确认。\
@@ -39,18 +46,107 @@ struct McpConfig {
     enabled: bool,
     port: u16,
     allow_execute: bool,
+    write_policy: McpWritePolicy,
     allow_unknown_host: bool,
     token: String,
 }
 
 impl From<&McpSettings> for McpConfig {
     fn from(settings: &McpSettings) -> Self {
+        let write_policy = settings.effective_write_policy();
         Self {
             enabled: settings.enabled,
             port: settings.port,
-            allow_execute: settings.allow_execute,
+            allow_execute: write_policy != McpWritePolicy::ReadOnly,
+            write_policy,
             allow_unknown_host: settings.allow_unknown_host,
             token: settings.token.clone(),
+        }
+    }
+}
+
+struct PendingApproval {
+    request: McpApprovalRequest,
+    decision: mpsc::SyncSender<bool>,
+}
+
+#[derive(Clone, Default)]
+pub struct McpApprovalRegistry {
+    pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+}
+
+impl McpApprovalRegistry {
+    pub fn list_pending(&self) -> Vec<McpApprovalRequest> {
+        let Ok(guard) = self.pending.lock() else {
+            return Vec::new();
+        };
+        let mut items: Vec<McpApprovalRequest> = guard
+            .values()
+            .map(|entry| entry.request.clone())
+            .collect();
+        items.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        items
+    }
+
+    pub fn resolve(&self, id: &str, approved: bool) -> bool {
+        let entry = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.remove(id));
+        match entry {
+            Some(item) => {
+                let _ = item.decision.send(approved);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn reject_all(&self) {
+        if let Ok(mut guard) = self.pending.lock() {
+            for (_, item) in guard.drain() {
+                let _ = item.decision.send(false);
+            }
+        }
+    }
+
+    fn request(
+        &self,
+        request: McpApprovalRequest,
+        notify: Option<&Arc<dyn Fn(McpApprovalRequest) + Send + Sync>>,
+    ) -> Result<bool, String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let id = request.id.clone();
+        {
+            let mut guard = self
+                .pending
+                .lock()
+                .map_err(|_| "审批队列锁不可用".to_string())?;
+            guard.insert(
+                id.clone(),
+                PendingApproval {
+                    request: request.clone(),
+                    decision: tx,
+                },
+            );
+        }
+        if let Some(callback) = notify {
+            callback(request);
+        }
+        match rx.recv_timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS)) {
+            Ok(decision) => Ok(decision),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Ok(mut guard) = self.pending.lock() {
+                    guard.remove(&id);
+                }
+                Err(format!(
+                    "等待桌面端审批超时（{APPROVAL_TIMEOUT_SECS} 秒），操作已自动取消。"
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("桌面端审批通道已关闭，操作已取消。".into())
+            }
         }
     }
 }
@@ -61,6 +157,8 @@ pub struct McpState {
     registry: RunbookExecutionRegistry,
     config: Mutex<McpConfig>,
     notify: Option<Arc<dyn Fn(McpCallRecord) + Send + Sync>>,
+    approvals: McpApprovalRegistry,
+    notify_approval: Option<Arc<dyn Fn(McpApprovalRequest) + Send + Sync>>,
 }
 
 impl McpState {
@@ -123,6 +221,7 @@ pub struct McpStatus {
     pub enabled: bool,
     pub port: u16,
     pub allow_execute: bool,
+    pub write_policy: McpWritePolicy,
     pub allow_unknown_host: bool,
     pub token: String,
     pub running: bool,
@@ -138,6 +237,7 @@ impl McpServer {
         registry: RunbookExecutionRegistry,
         settings: &McpSettings,
         notify: Option<Arc<dyn Fn(McpCallRecord) + Send + Sync>>,
+        notify_approval: Option<Arc<dyn Fn(McpApprovalRequest) + Send + Sync>>,
     ) -> Self {
         let state = Arc::new(McpState {
             db,
@@ -145,6 +245,8 @@ impl McpServer {
             registry,
             config: Mutex::new(McpConfig::from(settings)),
             notify,
+            approvals: McpApprovalRegistry::default(),
+            notify_approval,
         });
         let server = Self {
             state,
@@ -154,6 +256,14 @@ impl McpServer {
             let _ = server.restart();
         }
         server
+    }
+
+    pub fn pending_approvals(&self) -> Vec<McpApprovalRequest> {
+        self.state.approvals.list_pending()
+    }
+
+    pub fn resolve_approval(&self, id: &str, approved: bool) -> bool {
+        self.state.approvals.resolve(id, approved)
     }
 
     pub fn apply(&self, settings: &McpSettings) -> McpStatus {
@@ -184,6 +294,7 @@ impl McpServer {
             enabled: config.enabled,
             port: config.port,
             allow_execute: config.allow_execute,
+            write_policy: config.write_policy,
             allow_unknown_host: config.allow_unknown_host,
             endpoint: format!("http://127.0.0.1:{}/mcp", config.port),
             token: config.token,
@@ -202,6 +313,7 @@ impl McpServer {
     }
 
     pub fn shutdown(&self) {
+        self.state.approvals.reject_all();
         self.stop();
     }
 
@@ -689,12 +801,19 @@ fn handle_tool_call(state: &McpState, id: &Option<Value>, params: &Value) -> Val
     )
 }
 
-struct ToolSpec {
-    name: &'static str,
-    title: &'static str,
-    description: &'static str,
-    write: bool,
-    schema: Value,
+pub(crate) struct ToolSpec {
+    pub(crate) name: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) write: bool,
+    pub(crate) schema: Value,
+}
+
+pub(crate) fn readonly_tool_specs() -> Vec<ToolSpec> {
+    tool_specs()
+        .into_iter()
+        .filter(|spec| !spec.write)
+        .collect()
 }
 
 impl ToolSpec {
@@ -888,11 +1007,11 @@ fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
-struct ToolOutcome {
-    text: String,
-    is_error: bool,
-    target: String,
-    summary: String,
+pub(crate) struct ToolOutcome {
+    pub(crate) text: String,
+    pub(crate) is_error: bool,
+    pub(crate) target: String,
+    pub(crate) summary: String,
 }
 
 impl ToolOutcome {
@@ -1041,12 +1160,147 @@ fn resolve_server(servers: &[Server], query: &str) -> Result<Server, String> {
     }
 }
 
-fn require_execute(state: &McpState) -> Result<(), String> {
-    if state.config().allow_execute {
-        Ok(())
-    } else {
-        Err("写操作已关闭：请在 ControlVPS「AI 接入」页开启“允许执行命令与变更”后重试。".into())
+pub(crate) fn is_dangerous_command(command: &str) -> bool {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let regex = PATTERN.get_or_init(|| {
+        Regex::new(
+            r"(?i)(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|\b(?:reboot|shutdown|poweroff|halt|mkfs|wipefs|fdisk|parted)\b|\bdd\s+[^\n]*\bof=|chmod\s+-R\s+777|iptables\s+-F|ufw\s+disable|>\s*/dev/sd|:\(\)\s*\{)",
+        )
+        .expect("valid danger regex")
+    });
+    regex.is_match(command)
+}
+
+fn authorize_write(
+    state: &McpState,
+    tool: &str,
+    title: &str,
+    target: &str,
+    command: &str,
+) -> Result<(), String> {
+    match state.config().write_policy {
+        McpWritePolicy::ReadOnly => Err(
+            "写操作已关闭：请在 ControlVPS「AI 接入」页切换为“逐次弹窗审批”或“自动允许”后重试。"
+                .into(),
+        ),
+        McpWritePolicy::Allow => Ok(()),
+        McpWritePolicy::Confirm => {
+            let request = McpApprovalRequest {
+                id: Uuid::new_v4().to_string(),
+                tool: tool.to_string(),
+                title: title.to_string(),
+                target: target.to_string(),
+                command: command.chars().take(4000).collect(),
+                dangerous: is_dangerous_command(command),
+                created_at: Utc::now().to_rfc3339(),
+                timeout_seconds: APPROVAL_TIMEOUT_SECS,
+            };
+            let approved = state
+                .approvals
+                .request(request, state.notify_approval.as_ref())?;
+            if approved {
+                Ok(())
+            } else {
+                Err("桌面端用户已拒绝本次写操作审批。".into())
+            }
+        }
     }
+}
+
+pub(crate) fn execute_readonly_tool(
+    db: &Database,
+    known_hosts: &Path,
+    registry: &RunbookExecutionRegistry,
+    name: &str,
+    args: &Value,
+) -> ToolOutcome {
+    if tool_specs()
+        .iter()
+        .find(|spec| spec.name == name)
+        .is_none_or(|spec| spec.write)
+    {
+        return ToolOutcome::failure(arg_target(args), format!("工具 {name} 不可用于只读上下文"));
+    }
+    let state = McpState {
+        db: db.clone(),
+        known_hosts: known_hosts.to_path_buf(),
+        registry: registry.clone(),
+        config: Mutex::new(McpConfig {
+            enabled: true,
+            port: 0,
+            allow_execute: false,
+            write_policy: McpWritePolicy::ReadOnly,
+            allow_unknown_host: false,
+            token: String::new(),
+        }),
+        notify: None,
+        approvals: McpApprovalRegistry::default(),
+        notify_approval: None,
+    };
+    call_tool(&state, name, args)
+}
+
+pub(crate) fn execute_approved_command(
+    db: &Database,
+    known_hosts: &Path,
+    server_query: &str,
+    command: &str,
+    timeout: usize,
+) -> Result<ToolOutcome, String> {
+    let state = McpState {
+        db: db.clone(),
+        known_hosts: known_hosts.to_path_buf(),
+        registry: RunbookExecutionRegistry::default(),
+        config: Mutex::new(McpConfig {
+            enabled: true,
+            port: 0,
+            allow_execute: true,
+            write_policy: McpWritePolicy::Allow,
+            allow_unknown_host: false,
+            token: String::new(),
+        }),
+        notify: None,
+        approvals: McpApprovalRegistry::default(),
+        notify_approval: None,
+    };
+    run_command_with_actor(
+        &state,
+        server_query,
+        command,
+        timeout,
+        "[AI 助手] 执行命令",
+    )
+}
+
+pub(crate) fn execute_approved_batch_command(
+    db: &Database,
+    known_hosts: &Path,
+    server_queries: &[String],
+    command: &str,
+    concurrency: usize,
+) -> Result<ToolOutcome, String> {
+    let state = McpState {
+        db: db.clone(),
+        known_hosts: known_hosts.to_path_buf(),
+        registry: RunbookExecutionRegistry::default(),
+        config: Mutex::new(McpConfig {
+            enabled: true,
+            port: 0,
+            allow_execute: true,
+            write_policy: McpWritePolicy::Allow,
+            allow_unknown_host: false,
+            token: String::new(),
+        }),
+        notify: None,
+        approvals: McpApprovalRegistry::default(),
+        notify_approval: None,
+    };
+    let args = json!({
+        "servers": server_queries,
+        "command": command,
+        "concurrency": concurrency,
+    });
+    run_batch_with_actor(&state, &args, "[AI 助手] 批量命令")
 }
 
 fn error_text(error: AppError) -> String {
@@ -1210,14 +1464,31 @@ fn tool_diagnose(state: &McpState, args: &Value) -> Result<ToolOutcome, String> 
 }
 
 fn tool_run_command(state: &McpState, args: &Value) -> Result<ToolOutcome, String> {
-    require_execute(state)?;
     let command = arg_str(args, "command")?;
+    let timeout = arg_usize(args, "timeoutSeconds", 60, 1, 600)?;
+    let server_query = arg_str(args, "server")?;
+    run_command_with_actor(state, server_query, command, timeout, "[AI/MCP] 执行命令")
+}
+
+fn run_command_with_actor(
+    state: &McpState,
+    server_query: &str,
+    command: &str,
+    timeout: usize,
+    actor_action: &str,
+) -> Result<ToolOutcome, String> {
     if command.len() > 100_000 {
         return Err("命令不能超过 100000 字节".into());
     }
-    let timeout = arg_usize(args, "timeoutSeconds", 60, 1, 600)?;
     let servers = state.db.list_servers().map_err(error_text)?;
-    let server = resolve_server(&servers, arg_str(args, "server")?)?;
+    let server = resolve_server(&servers, server_query)?;
+    authorize_write(
+        state,
+        "run_command",
+        &format!("在 {} 执行命令", server.name),
+        &format!("{} ({})", server.name, server.host),
+        command,
+    )?;
     let (server, connection) = connect(state, &server)?;
     let started = Instant::now();
     let output = ssh::execute_controlled(
@@ -1268,7 +1539,7 @@ fn tool_run_command(state: &McpState, args: &Value) -> Result<ToolOutcome, Strin
     };
     let _ = state
         .db
-        .log_operation(&server.id, "MCP · 执行命令", success, &summary);
+        .log_operation(&server.id, actor_action, success, &summary);
     if success {
         Ok(ToolOutcome::ok(server.name.clone(), summary, &result))
     } else {
@@ -1282,7 +1553,14 @@ fn tool_run_command(state: &McpState, args: &Value) -> Result<ToolOutcome, Strin
 }
 
 fn tool_run_batch_command(state: &McpState, args: &Value) -> Result<ToolOutcome, String> {
-    require_execute(state)?;
+    run_batch_with_actor(state, args, "[AI/MCP] 批量命令")
+}
+
+fn run_batch_with_actor(
+    state: &McpState,
+    args: &Value,
+    actor_action: &str,
+) -> Result<ToolOutcome, String> {
     let command = arg_str(args, "command")?;
     if command.len() > 100_000 {
         return Err("命令不能超过 100000 字节".into());
@@ -1292,6 +1570,18 @@ fn tool_run_batch_command(state: &McpState, args: &Value) -> Result<ToolOutcome,
     if targets.len() > 50 {
         return Err("单次批量执行最多 50 台服务器".into());
     }
+    let target_label = targets
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    authorize_write(
+        state,
+        "run_batch_command",
+        &format!("在 {} 台服务器批量执行命令", targets.len()),
+        &target_label,
+        command,
+    )?;
     let mut jobs = Vec::with_capacity(targets.len());
     for server in &targets {
         jobs.push(runbook::connection_job(&state.db, &server.id).map_err(error_text)?);
@@ -1306,7 +1596,7 @@ fn tool_run_batch_command(state: &McpState, args: &Value) -> Result<ToolOutcome,
         };
         let _ = state
             .db
-            .log_operation(&item.server_id, "MCP · 批量命令", item.success, &summary);
+            .log_operation(&item.server_id, actor_action, item.success, &summary);
     }
     let payload = serde_json::to_value(&result).map_err(|error| error.to_string())?;
     let summary = format!(
@@ -1429,7 +1719,6 @@ fn tool_list_runbooks(state: &McpState) -> Result<ToolOutcome, String> {
 }
 
 fn tool_run_runbook(state: &McpState, args: &Value) -> Result<ToolOutcome, String> {
-    require_execute(state)?;
     let query = arg_str(args, "runbook")?;
     let runbooks = state.db.list_runbooks().map_err(error_text)?;
     let runbook = runbooks
@@ -1443,6 +1732,25 @@ fn tool_run_runbook(state: &McpState, args: &Value) -> Result<ToolOutcome, Strin
         .cloned()
         .ok_or_else(|| format!("没有找到 Runbook「{query}」"))?;
     let targets = resolve_targets(state, args)?;
+    let target_label = targets
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    let preview_steps = runbook
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(idx, step)| format!("# {}. {}\n{}", idx + 1, step.name, step.command))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    authorize_write(
+        state,
+        "run_runbook",
+        &format!("运行 Runbook「{}」（{} 台目标）", runbook.name, targets.len()),
+        &target_label,
+        &preview_steps,
+    )?;
     let concurrency = arg_usize(args, "concurrency", 4, 1, 10)?;
     let timeout_seconds = arg_usize(args, "timeoutSeconds", 300, 30, 3600)? as u64;
     let request = RunbookExecutionRequest {
@@ -1682,6 +1990,33 @@ mod tests {
     #[test]
     fn mcp_read_only_blocks_execute_tools() {
         let db = Database::in_memory().expect("in-memory db");
+        let _ = db.create_server(&crate::models::ServerInput {
+            name: "demo".into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            username: "root".into(),
+            auth_method: crate::models::AuthMethod::Agent,
+            private_key_path: None,
+            password: None,
+            key_passphrase: None,
+            group_name: None,
+            tags: vec![],
+            provider: None,
+            region: None,
+            notes: None,
+            cost: None,
+            currency: None,
+            expires_at: None,
+            jump_server_id: None,
+            jump_chain: vec![],
+            auth_profile_id: None,
+            cloud_account_id: None,
+            cloud_resource_id: None,
+            inherit_port: false,
+            inherit_username: false,
+            inherit_jump: false,
+            inherit_auth: false,
+        });
         let state = McpState {
             db,
             known_hosts: PathBuf::from("/tmp/nonexistent"),
@@ -1690,10 +2025,13 @@ mod tests {
                 enabled: true,
                 port: 8799,
                 allow_execute: false,
+                write_policy: McpWritePolicy::ReadOnly,
                 allow_unknown_host: false,
                 token: "test-token".into(),
             }),
             notify: None,
+            approvals: McpApprovalRegistry::default(),
+            notify_approval: None,
         };
         let resp = handle_message(
             &state,
@@ -1713,6 +2051,45 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("写操作已关闭"));
+    }
+
+    #[test]
+    fn mcp_confirm_policy_blocks_until_user_decision() {
+        let approvals = McpApprovalRegistry::default();
+        let resolver = approvals.clone();
+        let notify: Arc<dyn Fn(McpApprovalRequest) + Send + Sync> = Arc::new(move |req| {
+            let id = req.id.clone();
+            let reg = resolver.clone();
+            std::thread::spawn(move || {
+                reg.resolve(&id, false);
+            });
+        });
+        let decision = approvals
+            .request(
+                McpApprovalRequest {
+                    id: "req-1".into(),
+                    tool: "run_command".into(),
+                    title: "test".into(),
+                    target: "demo".into(),
+                    command: "uptime".into(),
+                    dangerous: false,
+                    created_at: Utc::now().to_rfc3339(),
+                    timeout_seconds: 5,
+                },
+                Some(&notify),
+            )
+            .unwrap();
+        assert!(!decision);
+        assert!(approvals.list_pending().is_empty());
+    }
+
+    #[test]
+    fn dangerous_command_detector_flags_destructive_patterns() {
+        assert!(is_dangerous_command("rm -rf /tmp/foo"));
+        assert!(is_dangerous_command("sudo shutdown -h now"));
+        assert!(is_dangerous_command("dd if=/dev/zero of=/dev/sda"));
+        assert!(!is_dangerous_command("systemctl status nginx"));
+        assert!(!is_dangerous_command("docker ps -a"));
     }
 }
 

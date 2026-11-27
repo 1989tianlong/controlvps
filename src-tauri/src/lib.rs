@@ -1,3 +1,4 @@
+mod ai_assistant;
 mod alerts;
 mod assets;
 mod backup;
@@ -30,7 +31,7 @@ mod utils;
 use alerts::AlertRegistry;
 use commands::AppPaths;
 use db::Database;
-use models::McpCallRecord;
+use models::{McpApprovalRequest, McpCallRecord};
 use runbook::RunbookExecutionRegistry;
 use scheduler::RunbookScheduler;
 use service_monitor::ServiceMonitorRegistry;
@@ -74,12 +75,18 @@ pub fn run() {
                 Arc::new(move |record: McpCallRecord| {
                     let _ = handle.emit("mcp-call", record);
                 });
+            let approval_handle = app.handle().clone();
+            let notify_approval: Arc<dyn Fn(McpApprovalRequest) + Send + Sync> =
+                Arc::new(move |request: McpApprovalRequest| {
+                    let _ = approval_handle.emit("mcp-approval-request", request);
+                });
             app.manage(mcp::McpServer::bootstrap(
                 database.clone(),
                 paths.known_hosts.clone(),
                 app.state::<RunbookExecutionRegistry>().inner().clone(),
                 &mcp_settings,
                 Some(notify),
+                Some(notify_approval),
             ));
             app.manage(database);
             app.manage(paths);
@@ -218,6 +225,13 @@ pub fn run() {
             commands::list_notification_deliveries,
             commands::clear_notification_deliveries,
             commands::get_action_center,
+            commands::list_pending_mcp_approvals,
+            commands::resolve_mcp_approval,
+            commands::get_ai_settings,
+            commands::update_ai_settings,
+            commands::test_ai_connection,
+            commands::ai_chat,
+            commands::execute_ai_proposal,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ControlVPS")

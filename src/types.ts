@@ -330,10 +330,13 @@ export interface McpToolInfo {
   write: boolean;
 }
 
+export type McpWritePolicy = "read_only" | "confirm" | "allow";
+
 export interface McpStatus {
   enabled: boolean;
   port: number;
   allowExecute: boolean;
+  writePolicy: McpWritePolicy;
   allowUnknownHost: boolean;
   token: string;
   running: boolean;
@@ -346,7 +349,19 @@ export interface McpSettingsInput {
   enabled: boolean;
   port: number;
   allowExecute: boolean;
+  writePolicy?: McpWritePolicy;
   allowUnknownHost: boolean;
+}
+
+export interface McpApprovalRequest {
+  id: string;
+  tool: string;
+  title: string;
+  target: string;
+  command: string;
+  dangerous: boolean;
+  createdAt: string;
+  timeoutSeconds: number;
 }
 
 export interface McpCallRecord {
@@ -1121,4 +1136,73 @@ export interface ActionCenterSummary {
   failedRunbooks: FailedRunbookItem[];
   enabledNotificationChannels: number;
   scheduledBackupPolicies: number;
+}
+
+export type AiProvider = "open_ai_compatible" | "anthropic" | "ollama";
+export type AiPermissionMode = "observer" | "confirm";
+
+export interface AiSettings {
+  enabled: boolean;
+  provider: AiProvider;
+  baseUrl: string;
+  model: string;
+  permissionMode: AiPermissionMode;
+  hasApiKey: boolean;
+}
+
+export interface AiSettingsInput {
+  enabled: boolean;
+  provider: AiProvider;
+  baseUrl: string;
+  model: string;
+  permissionMode: AiPermissionMode;
+  apiKey?: string;
+  clearApiKey?: boolean;
+}
+
+export interface AiChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AiToolTrace {
+  tool: string;
+  target: string;
+  success: boolean;
+  summary: string;
+  durationMs: number;
+}
+
+export type AiProposalKind = "run_command" | "run_batch_command" | "save_runbook";
+
+export interface AiActionProposal {
+  id: string;
+  kind: AiProposalKind;
+  title: string;
+  rationale: string;
+  server?: string;
+  servers: string[];
+  command?: string;
+  steps: RunbookStepInput[];
+  dangerous: boolean;
+}
+
+export interface AiChatRequest {
+  messages: AiChatMessage[];
+  contextServerId?: string;
+  contextNote?: string;
+}
+
+export interface AiChatResponse {
+  reply: string;
+  toolTraces: AiToolTrace[];
+  proposals: AiActionProposal[];
+  model: string;
+}
+
+export interface AiProposalExecutionResult {
+  success: boolean;
+  summary: string;
+  output: string;
+  createdRunbookId?: string;
 }
