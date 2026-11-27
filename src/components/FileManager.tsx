@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, Download, File, FileQuestion, Folder, FolderOpen, FolderPlus, Home, Link2, Pencil, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { ArrowUp, Code2, Download, File, FileQuestion, Folder, FolderOpen, FolderPlus, Home, Link2, Pencil, RefreshCw, Square, Trash2, Upload, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { formatBytes, formatTime } from "../lib/format";
-import type { FileListing, RemoteFileEntry, Server, TrustedExecutor } from "../types";
+import type { FileListing, RemoteEditSession, RemoteFileEntry, Server, TrustedExecutor } from "../types";
 import { TransferQueue } from "./TransferQueue";
 
 interface Props {
@@ -22,9 +23,36 @@ export function FileManager({ server, trusted }: Props) {
   const [notice, setNotice] = useState("");
   const [transferRevision, setTransferRevision] = useState(0);
   const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
+  const [editor, setEditor] = useState<"vscode" | "cursor" | "zed" | "system">("vscode");
+  const [editSessions, setEditSessions] = useState<RemoteEditSession[]>([]);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const requestId = useRef(0);
   const selected = listing?.entries.find((entry) => entry.path === selectedPath);
+
+  useEffect(() => {
+    let active = true;
+    void api.listRemoteEditSessions(server.id).then((list) => {
+      if (active) setEditSessions(list);
+    }).catch(() => {});
+    let unlisten: (() => void) | undefined;
+    void listen<RemoteEditSession>("remote-edit-updated", (event) => {
+      if (!active || event.payload.serverId !== server.id) return;
+      setEditSessions((prev) => {
+        const idx = prev.findIndex((item) => item.id === event.payload.id);
+        if (idx === -1) return [event.payload, ...prev];
+        const next = [...prev];
+        next[idx] = event.payload;
+        return next;
+      });
+    }).then((fn) => {
+      if (active) unlisten = fn;
+      else fn();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [server.id]);
 
   const load = useCallback(async (path?: string) => {
     const currentRequest = ++requestId.current;
@@ -137,6 +165,29 @@ export function FileManager({ server, trusted }: Props) {
     }
   };
 
+  const openInEditor = async () => {
+    if (!selected || selected.kind === "directory") return;
+    setBusy("edit");
+    setError("");
+    setNotice("");
+    try {
+      const session = await trusted(server, (allow) =>
+        api.openRemoteFileInEditor(server.id, selected.path, editor, allow),
+      );
+      setEditSessions((prev) => [session, ...prev.filter((item) => item.id !== session.id)]);
+      setNotice(`已在本地编辑器打开 ${selected.name}，保存后将自动同步回服务器`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const stopEditSession = async (sessionId: string) => {
+    await api.stopRemoteEditSession(sessionId);
+    setEditSessions((prev) => prev.filter((item) => item.id !== sessionId));
+  };
+
   const working = busy !== "";
   return <div className="file-manager">
     <form className="file-pathbar" onSubmit={(event) => { event.preventDefault(); if (pathInput.trim()) void load(pathInput.trim()); }}>
@@ -160,7 +211,16 @@ export function FileManager({ server, trusted }: Props) {
     {selected && <div className="file-selection">
       <span className="file-selection-name"><EntryIcon entry={selected} size={16} />{selected.name}</span>
       <div className="row-actions">
-        {selected.kind !== "directory" && <button className="btn" type="button" disabled={working} onClick={() => void download()}><Download size={15} />下载</button>}
+        {selected.kind !== "directory" && <>
+          <select className="select" aria-label="本地编辑器" value={editor} onChange={(e) => setEditor(e.target.value as "vscode" | "cursor" | "zed" | "system")} disabled={working}>
+            <option value="vscode">VS Code</option>
+            <option value="cursor">Cursor</option>
+            <option value="zed">Zed</option>
+            <option value="system">系统默认</option>
+          </select>
+          <button className="btn btn-primary" type="button" disabled={working} onClick={() => void openInEditor()}><Code2 size={15} />本地编辑</button>
+          <button className="btn" type="button" disabled={working} onClick={() => void download()}><Download size={15} />下载</button>
+        </>}
         <button className="btn" type="button" disabled={working} onClick={() => setNameDialog({ mode: "rename", name: selected.name })}><Pencil size={15} />重命名</button>
         <button className="btn btn-danger" type="button" disabled={working} onClick={remove}><Trash2 size={15} />删除</button>
       </div>
@@ -176,8 +236,36 @@ export function FileManager({ server, trusted }: Props) {
       </tbody></table> : !error && <div className="skeleton file-skeleton" aria-label="正在读取远程目录" />}
       {listing?.entries.length === 0 && <div className="file-empty"><FolderOpen size={28} /><p>这个目录是空的</p></div>}
     </div>
+    {editSessions.length > 0 && (
+      <div className="panel panel-body m-4">
+        <div className="flex items-center justify-between mb-2">
+          <strong className="text-sm">本地编辑器实时同步（{editSessions.length}）</strong>
+          <span className="table-meta">在本地编辑器按 ⌘S 保存后自动通过 SFTP 原子写回</span>
+        </div>
+        <div className="flex flex-col gap-2">
+          {editSessions.map((session) => (
+            <div key={session.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="measured">{session.remotePath} ({session.editor})</span>
+              <div className="row-actions">
+                <span className={session.status === "error" ? "badge badge-bad" : session.status === "synced" ? "badge badge-ok" : "badge"}>
+                  {session.status === "syncing"
+                    ? "正在上传同步"
+                    : session.status === "synced"
+                      ? `已同步 ${session.syncCount} 次`
+                      : session.status === "error"
+                        ? `同步失败: ${session.lastError ?? ""}`
+                        : "监听保存中"}
+                </span>
+                {session.lastSyncedAt && <span className="table-meta">{formatTime(session.lastSyncedAt)}</span>}
+                <button className="btn" type="button" onClick={() => void stopEditSession(session.id)}><Square size={13} />停止同步</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
     <TransferQueue serverId={server.id} revision={transferRevision} onCompleted={() => void load(listing?.path)} />
-    {busy && busy !== "list" && <div className="file-progress" role="status">{{ mkdir: "正在创建目录", rename: "正在重命名", delete: "正在删除", upload: "正在验证连接并加入队列", download: "正在验证连接并加入队列" }[busy]}</div>}
+    {busy && busy !== "list" && <div className="file-progress" role="status">{{ mkdir: "正在创建目录", rename: "正在重命名", delete: "正在删除", upload: "正在验证连接并加入队列", download: "正在验证连接并加入队列", edit: "正在拉取文件并启动本地编辑器" }[busy]}</div>}
     <dialog ref={dialogRef} className="dialog file-dialog" onCancel={(event) => { event.preventDefault(); if (busy !== "mkdir" && busy !== "rename") setNameDialog(null); }}>
       <form onSubmit={(event) => { event.preventDefault(); if (nameDialog?.mode === "mkdir") createDirectory(); else rename(); }}>
         <div className="dialog-header"><h2>{nameDialog?.mode === "mkdir" ? "新建远程目录" : "重命名"}</h2><button className="icon-btn" type="button" aria-label="关闭" disabled={busy === "mkdir" || busy === "rename"} onClick={() => setNameDialog(null)}><X size={18} /></button></div>

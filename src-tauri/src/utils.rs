@@ -123,6 +123,14 @@ impl Utf8StreamDecoder {
     }
 }
 
+pub fn zeroize_string(secret: &mut String) {
+    // SAFETY: Overwriting bytes with zeros produces valid UTF-8 (all NULs), then we clear.
+    unsafe {
+        zeroize_bytes(secret.as_bytes_mut());
+    }
+    secret.clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

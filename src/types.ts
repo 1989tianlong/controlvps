@@ -1247,3 +1247,78 @@ export interface AiProposalExecutionResult {
   output: string;
   createdRunbookId?: string;
 }
+
+export interface SecretProviderStatus {
+  provider: "onepassword" | "bitwarden" | string;
+  label: string;
+  available: boolean;
+  cliPath?: string;
+  version?: string;
+  signedIn: boolean;
+  detail: string;
+}
+
+export interface SecretRefTestResult {
+  ok: boolean;
+  provider: string;
+  preview: string;
+  elapsedMs: number;
+}
+
+export interface ProcessEntry {
+  pid: number;
+  ppid: number;
+  user: string;
+  cpuPercent: number;
+  memPercent: number;
+  rssKb: number;
+  stat: string;
+  elapsed: string;
+  command: string;
+}
+
+export type LogStreamSource =
+  | { kind: "systemd"; unit?: string; lines?: number }
+  | { kind: "docker"; container: string; lines?: number }
+  | { kind: "file"; path: string; lines?: number };
+
+export interface LogStreamDataEvent {
+  streamId: string;
+  chunk: string;
+}
+
+export interface LogStreamClosedEvent {
+  streamId: string;
+  reason: string;
+}
+
+export interface RemoteEditSession {
+  id: string;
+  serverId: string;
+  serverName: string;
+  remotePath: string;
+  localPath: string;
+  editor: string;
+  status: "watching" | "syncing" | "synced" | "error" | "stopped" | string;
+  lastSyncedAt?: string;
+  syncCount: number;
+  lastError?: string;
+}
+
+export interface ByoSyncConfig {
+  folderPath: string;
+  includeCredentials: boolean;
+  lastSyncedAt?: string;
+  lastSyncHash?: string;
+  lastDirection?: string;
+}
+
+export interface ByoSyncStatus {
+  config: ByoSyncConfig;
+  vaultFilePath?: string;
+  remoteExists: boolean;
+  remoteUpdatedAt?: string;
+  remoteHash?: string;
+  remoteSizeBytes?: number;
+  remoteHasChanges: boolean;
+}

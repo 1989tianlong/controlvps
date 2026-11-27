@@ -2137,6 +2137,181 @@ pub async fn fetch_free_catalog() -> CommandResult<RemoteFreeCatalogResult> {
     run_blocking(discovery::fetch_free_catalog).await
 }
 
+#[tauri::command]
+pub async fn detect_secret_providers() -> CommandResult<Vec<crate::secret_providers::SecretProviderStatus>> {
+    run_blocking(|| Ok(crate::secret_providers::detect_providers())).await
+}
+
+#[tauri::command]
+pub async fn test_secret_ref(
+    reference: String,
+) -> CommandResult<crate::secret_providers::SecretRefTestResult> {
+    run_blocking(move || crate::secret_providers::test_secret_ref(&reference)).await
+}
+
+#[tauri::command]
+pub async fn list_remote_processes(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    limit: Option<usize>,
+    allow_unknown_host: bool,
+) -> CommandResult<Vec<crate::live_ops::ProcessEntry>> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let max_rows = limit.unwrap_or(60);
+    run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            &job.jumps,
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        let res = crate::live_ops::list_processes(&connection.session, max_rows);
+        connection.disconnect();
+        res
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn signal_remote_process(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    pid: u32,
+    signal: String,
+    allow_unknown_host: bool,
+) -> CommandResult<String> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let sig_clone = signal.clone();
+    let result = run_blocking(move || {
+        let connection = ssh::connect(
+            &job.server,
+            &job.credentials,
+            &job.jumps,
+            &known_hosts,
+            allow_unknown_host,
+        )?;
+        let res = crate::live_ops::signal_process(&connection.session, pid, &sig_clone);
+        connection.disconnect();
+        res
+    })
+    .await;
+    log_operation_result(&db, &id, "进程信号", &result, |summary| summary.clone());
+    result
+}
+
+#[tauri::command]
+pub async fn start_log_stream(
+    app: AppHandle,
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    registry: State<'_, crate::live_ops::LogStreamRegistry>,
+    id: String,
+    source: crate::live_ops::LogStreamSource,
+    allow_unknown_host: bool,
+) -> CommandResult<String> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let reg = registry.inner().clone();
+    crate::live_ops::start_log_stream(app, reg, job, known_hosts, allow_unknown_host, source)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn stop_log_stream(
+    registry: State<'_, crate::live_ops::LogStreamRegistry>,
+    stream_id: String,
+) -> bool {
+    registry.stop(&stream_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn open_remote_file_in_editor(
+    app: AppHandle,
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    registry: State<'_, crate::remote_edit::RemoteEditRegistry>,
+    id: String,
+    remote_path: String,
+    editor: String,
+    allow_unknown_host: bool,
+) -> CommandResult<crate::remote_edit::RemoteEditSession> {
+    let job = connection_job(&db, &id)?;
+    let known_hosts = paths.known_hosts.clone();
+    let data_dir = paths.data_dir.clone();
+    let db_clone = db.inner().clone();
+    let reg = registry.inner().clone();
+    run_blocking(move || {
+        crate::remote_edit::open_in_local_editor(
+            app,
+            reg,
+            db_clone,
+            job,
+            known_hosts,
+            allow_unknown_host,
+            &data_dir,
+            &remote_path,
+            &editor,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn list_remote_edit_sessions(
+    registry: State<'_, crate::remote_edit::RemoteEditRegistry>,
+    server_id: Option<String>,
+) -> Vec<crate::remote_edit::RemoteEditSession> {
+    registry.list(server_id.as_deref())
+}
+
+#[tauri::command]
+pub fn stop_remote_edit_session(
+    registry: State<'_, crate::remote_edit::RemoteEditRegistry>,
+    session_id: String,
+) -> bool {
+    registry.stop(&session_id)
+}
+
+#[tauri::command]
+pub fn get_byo_sync_status(
+    db: State<'_, Database>,
+) -> CommandResult<crate::backup::ByoSyncStatus> {
+    crate::backup::byo_sync_status(&db).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_byo_sync_config(
+    db: State<'_, Database>,
+    folder_path: String,
+    include_credentials: bool,
+) -> CommandResult<crate::backup::ByoSyncStatus> {
+    crate::backup::update_byo_sync_config(&db, folder_path, include_credentials).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn byo_sync_push(
+    db: State<'_, Database>,
+    password: String,
+) -> CommandResult<crate::backup::ByoSyncStatus> {
+    let db_clone = db.inner().clone();
+    run_blocking(move || crate::backup::byo_sync_push(&db_clone, &password)).await
+}
+
+#[tauri::command]
+pub async fn byo_sync_pull(
+    db: State<'_, Database>,
+    password: String,
+) -> CommandResult<BackupRestoreResult> {
+    let db_clone = db.inner().clone();
+    run_blocking(move || crate::backup::byo_sync_pull(&db_clone, &password)).await
+}
+
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {
     crate::runbook::connection_job(db, id).map_err(CommandError::from)
 }

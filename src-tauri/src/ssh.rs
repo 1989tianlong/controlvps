@@ -447,10 +447,13 @@ fn connect_on_stream(
 fn authenticate(session: &Session, server: &Server, credentials: &Credentials) -> AppResult<()> {
     match server.auth_method {
         AuthMethod::Password => {
-            let password = credentials.password.as_deref().ok_or_else(|| {
+            let raw_password = credentials.password.as_deref().ok_or_else(|| {
                 AppError::Message("钥匙串中没有密码，请编辑 VPS 并重新保存".into())
             })?;
-            session.userauth_password(&server.username, password)?;
+            let mut resolved = crate::secret_providers::resolve_secret_value(raw_password)?;
+            let auth_result = session.userauth_password(&server.username, &resolved);
+            utils::zeroize_string(&mut resolved);
+            auth_result?;
         }
         AuthMethod::Key => {
             let path = server
@@ -458,12 +461,20 @@ fn authenticate(session: &Session, server: &Server, credentials: &Credentials) -
                 .as_deref()
                 .ok_or_else(|| AppError::Message("请选择私钥文件".into()))?;
             let path = expand_home(path)?;
-            session.userauth_pubkey_file(
+            let mut resolved_pass = match credentials.key_passphrase.as_deref() {
+                Some(raw) => Some(crate::secret_providers::resolve_secret_value(raw)?),
+                None => None,
+            };
+            let auth_result = session.userauth_pubkey_file(
                 &server.username,
                 None,
                 &path,
-                credentials.key_passphrase.as_deref(),
-            )?;
+                resolved_pass.as_deref(),
+            );
+            if let Some(ref mut secret) = resolved_pass {
+                utils::zeroize_string(secret);
+            }
+            auth_result?;
         }
         AuthMethod::Agent => {
             let mut agent = session.agent()?;

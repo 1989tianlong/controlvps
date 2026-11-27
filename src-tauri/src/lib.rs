@@ -12,13 +12,16 @@ mod discovery;
 mod docker;
 mod error;
 mod files;
+mod live_ops;
 mod mcp;
 mod metrics;
 mod models;
 mod notifications;
 mod recording;
+mod remote_edit;
 mod runbook;
 mod scheduler;
+mod secret_providers;
 mod security;
 mod service_monitor;
 mod ssh;
@@ -32,7 +35,9 @@ mod utils;
 use alerts::AlertRegistry;
 use commands::AppPaths;
 use db::Database;
+use live_ops::LogStreamRegistry;
 use models::{McpApprovalRequest, McpCallRecord};
+use remote_edit::RemoteEditRegistry;
 use runbook::RunbookExecutionRegistry;
 use scheduler::RunbookScheduler;
 use service_monitor::ServiceMonitorRegistry;
@@ -56,6 +61,8 @@ pub fn run() {
         .manage(TransferRegistry::default())
         .manage(TunnelRegistry::default())
         .manage(RunbookExecutionRegistry::default())
+        .manage(LogStreamRegistry::default())
+        .manage(RemoteEditRegistry::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -236,6 +243,19 @@ pub fn run() {
             commands::run_server_benchmark,
             commands::list_server_benchmarks,
             commands::fetch_free_catalog,
+            commands::detect_secret_providers,
+            commands::test_secret_ref,
+            commands::list_remote_processes,
+            commands::signal_remote_process,
+            commands::start_log_stream,
+            commands::stop_log_stream,
+            commands::open_remote_file_in_editor,
+            commands::list_remote_edit_sessions,
+            commands::stop_remote_edit_session,
+            commands::get_byo_sync_status,
+            commands::update_byo_sync_config,
+            commands::byo_sync_push,
+            commands::byo_sync_pull,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ControlVPS")
@@ -252,6 +272,12 @@ pub fn run() {
                 }
                 if let Some(terminals) = app.try_state::<TerminalRegistry>() {
                     terminals.close_all();
+                }
+                if let Some(logs) = app.try_state::<LogStreamRegistry>() {
+                    logs.stop_all();
+                }
+                if let Some(edits) = app.try_state::<RemoteEditRegistry>() {
+                    edits.stop_all();
                 }
             }
         });

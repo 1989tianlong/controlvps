@@ -15,6 +15,7 @@ import type {
   BackupPreview,
   BackupRestoreResult,
   BackupSummary,
+  ByoSyncStatus,
   AuthProfile,
   AuthProfileInput,
   CloudAccount,
@@ -30,14 +31,19 @@ import type {
   DataProtectionRestoreResult,
   DataProtectionRun,
   DealFeed,
+  LogStreamSource,
   McpApprovalRequest,
   NotificationChannel,
   NotificationChannelInput,
   NotificationDelivery,
+  ProcessEntry,
   RecordingDetail,
   RecordingHandle,
   RecordingSummary,
+  RemoteEditSession,
   ResticSnapshot,
+  SecretProviderStatus,
+  SecretRefTestResult,
   ComposeAction,
   ComposeActionResult,
   ComposeApplication,
@@ -173,7 +179,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.13.0",
+        version: "1.14.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "系统钥匙串",
@@ -398,6 +404,26 @@ export const api = {
   listServerBenchmarks: (serverId?: string) =>
     call<ServerBenchmark[]>("list_server_benchmarks", { serverId }),
   fetchFreeCatalog: () => call<RemoteFreeCatalogResult>("fetch_free_catalog"),
+  detectSecretProviders: () => call<SecretProviderStatus[]>("detect_secret_providers"),
+  testSecretRef: (reference: string) => call<SecretRefTestResult>("test_secret_ref", { reference }),
+  listRemoteProcesses: (id: string, limit = 60, allowUnknownHost = false) =>
+    call<ProcessEntry[]>("list_remote_processes", { id, limit, allowUnknownHost }),
+  signalRemoteProcess: (id: string, pid: number, signal: string, allowUnknownHost = false) =>
+    call<string>("signal_remote_process", { id, pid, signal, allowUnknownHost }),
+  startLogStream: (id: string, source: LogStreamSource, allowUnknownHost = false) =>
+    call<string>("start_log_stream", { id, source, allowUnknownHost }),
+  stopLogStream: (streamId: string) => call<boolean>("stop_log_stream", { streamId }),
+  openRemoteFileInEditor: (id: string, remotePath: string, editor: string, allowUnknownHost = false) =>
+    call<RemoteEditSession>("open_remote_file_in_editor", { id, remotePath, editor, allowUnknownHost }),
+  listRemoteEditSessions: (serverId?: string) =>
+    call<RemoteEditSession[]>("list_remote_edit_sessions", { serverId }),
+  stopRemoteEditSession: (sessionId: string) =>
+    call<boolean>("stop_remote_edit_session", { sessionId }),
+  getByoSyncStatus: () => call<ByoSyncStatus>("get_byo_sync_status"),
+  updateByoSyncConfig: (folderPath: string, includeCredentials: boolean) =>
+    call<ByoSyncStatus>("update_byo_sync_config", { folderPath, includeCredentials }),
+  byoSyncPush: (password: string) => call<ByoSyncStatus>("byo_sync_push", { password }),
+  byoSyncPull: (password: string) => call<BackupRestoreResult>("byo_sync_pull", { password }),
 };
 
 export async function openExternal(url: string) {

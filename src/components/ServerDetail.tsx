@@ -9,8 +9,9 @@ import { DockerManager } from "./DockerManager";
 import { SystemdManager } from "./SystemdManager";
 import { DataProtectionManager } from "./DataProtectionManager";
 import { ServerBenchmarkPanel } from "./ServerBenchmarkPanel";
+import { LiveOpsPanel } from "./LiveOpsPanel";
 
-export type DetailTab = "overview" | "diagnostics" | "provision" | "files" | "docker" | "services" | "protection" | "actions";
+export type DetailTab = "overview" | "diagnostics" | "provision" | "live" | "files" | "docker" | "services" | "protection" | "actions";
 
 interface Props {
   server: Server;
@@ -38,6 +39,7 @@ export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, met
         <button className="tab" type="button" role="tab" aria-selected={tab === "overview"} onClick={() => onTabChange("overview")}>概览</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "diagnostics"} onClick={() => onTabChange("diagnostics")}>连接诊断</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "provision"} onClick={() => onTabChange("provision")}>验机与初始化</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "live"} onClick={() => onTabChange("live")}>实时日志/进程</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "files"} onClick={() => onTabChange("files")}>文件管理</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "docker"} onClick={() => onTabChange("docker")}>Docker</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "services"} onClick={() => onTabChange("services")}>服务管理</button>
@@ -47,6 +49,7 @@ export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, met
       {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
       {tab === "diagnostics" && <ConnectionDiagnostics report={diagnostics} error={metricsError} busy={refreshing} onRun={onDiagnose} />}
       {tab === "provision" && <ServerBenchmarkPanel server={server} trusted={trusted} onOpenRunbooks={onOpenRunbooks} />}
+      {tab === "live" && <LiveOpsPanel server={server} trusted={trusted} />}
       {tab === "files" && <FileManager server={server} trusted={trusted} />}
       {tab === "docker" && <DockerManager server={server} trusted={trusted} />}
       {tab === "services" && <SystemdManager server={server} trusted={trusted} />}

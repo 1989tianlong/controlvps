@@ -236,13 +236,14 @@ export function ServerForm({ server, preset, servers, open, onClose, onSaved }: 
                 </div>
                 <div className="field span-2">
                   <label htmlFor="key-passphrase">私钥密码{server?.hasKeyPassphrase ? "，留空表示保留" : ""}</label>
-                  <input className="input" id="key-passphrase" name="keyPassphrase" type="password" autoComplete="new-password" value={form.keyPassphrase ?? ""} onChange={(e) => update("keyPassphrase", e.target.value)} />
+                  <input className="input" id="key-passphrase" name="keyPassphrase" type="password" autoComplete="new-password" value={form.keyPassphrase ?? ""} onChange={(e) => update("keyPassphrase", e.target.value)} placeholder="明文口令，或 op://Vault/Item/Field / bw://条目/password" />
+                  <p className="field-help">支持直接填写 1Password（op://）或 Bitwarden（bw://）引用，连接时动态取密。</p>
                 </div>
               </>}
               {!usingProfile && form.authMethod === "password" && <div className="field span-2">
                 <label htmlFor="server-password">SSH 密码{server ? "，留空表示保留" : "，必填"}</label>
-                <input className="input" id="server-password" name="password" type="password" autoComplete="new-password" required={!server} value={form.password ?? ""} onChange={(e) => update("password", e.target.value)} />
-                <p className="field-help">密码保存在系统钥匙串，不会写入 SQLite。</p>
+                <input className="input" id="server-password" name="password" type="password" autoComplete="new-password" required={!server} value={form.password ?? ""} onChange={(e) => update("password", e.target.value)} placeholder="明文密码，或 op://Vault/Item/password / bw://条目/password" />
+                <p className="field-help">密码保存在系统钥匙串，不会写入 SQLite；也支持 op:// 或 bw:// 外部密码管理器引用。</p>
               </div>}
               {(usingProfile ? activeProfile?.authMethod === "agent" : form.authMethod === "agent") && <p className="text-muted span-2">使用当前系统 SSH Agent 中已加载的身份，请确认 `ssh-add -L` 能列出密钥。</p>}
             </div>

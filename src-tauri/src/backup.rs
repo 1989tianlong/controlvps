@@ -1,14 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use chrono::{DateTime, Utc};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::db::Database;
@@ -514,6 +516,145 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> AppResult<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     write_result
+}
+
+const BYO_SYNC_SETTING_KEY: &str = "byo-sync";
+const BYO_SYNC_FILENAME: &str = "controlvps-vault.cvpsbackup";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ByoSyncConfig {
+    pub folder_path: String,
+    pub include_credentials: bool,
+    pub last_synced_at: Option<String>,
+    pub last_sync_hash: Option<String>,
+    pub last_direction: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ByoSyncStatus {
+    pub config: ByoSyncConfig,
+    pub vault_file_path: Option<String>,
+    pub remote_exists: bool,
+    pub remote_updated_at: Option<String>,
+    pub remote_hash: Option<String>,
+    pub remote_size_bytes: Option<u64>,
+    pub remote_has_changes: bool,
+}
+
+pub fn load_byo_sync_config(db: &Database) -> AppResult<ByoSyncConfig> {
+    let Some(raw) = db.get_app_setting(BYO_SYNC_SETTING_KEY)? else {
+        return Ok(ByoSyncConfig::default());
+    };
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
+}
+
+pub fn save_byo_sync_config(db: &Database, config: &ByoSyncConfig) -> AppResult<()> {
+    let encoded = serde_json::to_string(config)
+        .map_err(|err| AppError::Message(format!("无法序列化同步配置：{err}")))?;
+    db.set_app_setting(BYO_SYNC_SETTING_KEY, &encoded)
+}
+
+pub fn update_byo_sync_config(
+    db: &Database,
+    folder_path: String,
+    include_credentials: bool,
+) -> AppResult<ByoSyncStatus> {
+    let mut config = load_byo_sync_config(db)?;
+    let trimmed = folder_path.trim().to_string();
+    if !trimmed.is_empty() && !Path::new(&trimmed).is_dir() {
+        return Err(AppError::Message("所选同步目录不存在或不是文件夹".into()));
+    }
+    config.folder_path = trimmed;
+    config.include_credentials = include_credentials;
+    save_byo_sync_config(db, &config)?;
+    byo_sync_status(db)
+}
+
+pub fn byo_sync_status(db: &Database) -> AppResult<ByoSyncStatus> {
+    let config = load_byo_sync_config(db)?;
+    if config.folder_path.trim().is_empty() {
+        return Ok(ByoSyncStatus {
+            config,
+            vault_file_path: None,
+            remote_exists: false,
+            remote_updated_at: None,
+            remote_hash: None,
+            remote_size_bytes: None,
+            remote_has_changes: false,
+        });
+    }
+    let vault_path = PathBuf::from(&config.folder_path).join(BYO_SYNC_FILENAME);
+    if !vault_path.is_file() {
+        return Ok(ByoSyncStatus {
+            config,
+            vault_file_path: Some(vault_path.display().to_string()),
+            remote_exists: false,
+            remote_updated_at: None,
+            remote_hash: None,
+            remote_size_bytes: None,
+            remote_has_changes: false,
+        });
+    }
+    let meta = std::fs::metadata(&vault_path)?;
+    let bytes = std::fs::read(&vault_path)?;
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let modified = meta
+        .modified()
+        .ok()
+        .map(|ts| DateTime::<Utc>::from(ts).to_rfc3339());
+    let remote_has_changes = config.last_sync_hash.as_deref() != Some(hash.as_str());
+    Ok(ByoSyncStatus {
+        config,
+        vault_file_path: Some(vault_path.display().to_string()),
+        remote_exists: true,
+        remote_updated_at: modified,
+        remote_hash: Some(hash),
+        remote_size_bytes: Some(meta.len()),
+        remote_has_changes,
+    })
+}
+
+pub fn byo_sync_push(db: &Database, password: &str) -> AppResult<ByoSyncStatus> {
+    let mut config = load_byo_sync_config(db)?;
+    if config.folder_path.trim().is_empty() {
+        return Err(AppError::Message("请先选择同步目录（如 iCloud Drive / Dropbox / Syncthing 目录）".into()));
+    }
+    let folder = PathBuf::from(&config.folder_path);
+    if !folder.is_dir() {
+        return Err(AppError::Message("同步目录不存在，请重新选择".into()));
+    }
+    let vault_path = folder.join(BYO_SYNC_FILENAME);
+    create(db, &vault_path, password, config.include_credentials)?;
+    let bytes = std::fs::read(&vault_path)?;
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    config.last_synced_at = Some(Utc::now().to_rfc3339());
+    config.last_sync_hash = Some(hash);
+    config.last_direction = Some("push".into());
+    save_byo_sync_config(db, &config)?;
+    byo_sync_status(db)
+}
+
+pub fn byo_sync_pull(db: &Database, password: &str) -> AppResult<BackupRestoreResult> {
+    let mut config = load_byo_sync_config(db)?;
+    if config.folder_path.trim().is_empty() {
+        return Err(AppError::Message("请先选择同步目录".into()));
+    }
+    let vault_path = PathBuf::from(&config.folder_path).join(BYO_SYNC_FILENAME);
+    if !vault_path.is_file() {
+        return Err(AppError::Message(
+            "同步目录中尚未找到 controlvps-vault.cvpsbackup 文件".into(),
+        ));
+    }
+    let result = restore(db, &vault_path, password)?;
+    let bytes = std::fs::read(&vault_path)?;
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    config.last_synced_at = Some(Utc::now().to_rfc3339());
+    config.last_sync_hash = Some(hash);
+    config.last_direction = Some("pull".into());
+    save_byo_sync_config(db, &config)?;
+    Ok(result)
 }
 
 #[cfg(test)]
