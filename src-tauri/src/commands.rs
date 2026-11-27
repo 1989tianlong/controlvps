@@ -22,7 +22,8 @@ use crate::models::{
     ComposeEditInput, ComposeLogs, ComposeOverview, ConnectionReport, ConnectionTest,
     DataProtectionInput, DataProtectionOverview, DataProtectionPolicy, DataProtectionRestoreResult,
     DataProtectionRun, DockerAction, DockerActionResult, DockerLogs, DockerOverview, FileListing,
-    FileTransfer, FileTransferKind, FileTransferTask, MetricSample, MonitoringSettings,
+    FileTransfer, FileTransferKind, FileTransferTask, McpCallRecord, McpSettingsInput, MetricSample,
+    MonitoringSettings,
     OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook, RunbookExecution,
     RunbookExecutionRequest, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
     RunbookTrigger, SecurityReport, Server, ServerGroup, ServerGroupInput, ServerInput,
@@ -31,6 +32,7 @@ use crate::models::{
     SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
     TerminalSession, TunnelStatus,
 };
+use crate::mcp::{McpServer, McpStatus};
 use crate::runbook::RunbookExecutionRegistry;
 use crate::security;
 use crate::service_monitor::{self, ServiceMonitorRegistry};
@@ -40,6 +42,43 @@ use crate::systemd;
 use crate::terminal::{self, TerminalCommand, TerminalRegistry};
 use crate::transfers::TransferRegistry;
 use crate::tunnel::TunnelRegistry;
+
+#[tauri::command]
+pub fn get_mcp_status(server: State<'_, McpServer>) -> McpStatus {
+    server.status()
+}
+
+#[tauri::command]
+pub fn update_mcp_settings(
+    db: State<'_, Database>,
+    server: State<'_, McpServer>,
+    input: McpSettingsInput,
+) -> CommandResult<McpStatus> {
+    let settings = db.update_mcp_settings(&input)?;
+    Ok(server.apply(&settings))
+}
+
+#[tauri::command]
+pub fn rotate_mcp_token(
+    db: State<'_, Database>,
+    server: State<'_, McpServer>,
+) -> CommandResult<McpStatus> {
+    let settings = db.rotate_mcp_token()?;
+    Ok(server.rotate_token(&settings))
+}
+
+#[tauri::command]
+pub fn list_mcp_calls(
+    db: State<'_, Database>,
+    limit: Option<usize>,
+) -> CommandResult<Vec<McpCallRecord>> {
+    db.list_mcp_calls(limit.unwrap_or(50)).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn clear_mcp_calls(db: State<'_, Database>) -> CommandResult<()> {
+    db.clear_mcp_calls().map_err(Into::into)
+}
 
 pub struct AppPaths {
     pub data_dir: PathBuf,

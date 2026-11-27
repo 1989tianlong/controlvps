@@ -43,6 +43,9 @@ import type {
   FileListing,
   FileTransfer,
   FileTransferTask,
+  McpCallRecord,
+  McpSettingsInput,
+  McpStatus,
   MetricSample,
   MonitoringSettings,
   OperationLog,
@@ -103,6 +106,20 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
     if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events"].includes(command)) return [] as T;
+    if (command === "list_mcp_calls") return [] as T;
+    if (command === "get_mcp_status") {
+      return {
+        enabled: false,
+        port: 8799,
+        allowExecute: false,
+        allowUnknownHost: false,
+        token: "",
+        running: false,
+        endpoint: "http://127.0.0.1:8799/mcp",
+        error: null,
+        tools: [],
+      } as T;
+    }
     if (command === "get_monitoring_settings") {
       return {
         autoCollect: false,
@@ -315,6 +332,11 @@ export const api = {
   cancelFileTransfer: (id: string) => call<FileTransferTask>("cancel_file_transfer", { id }),
   retryFileTransfer: (id: string) => call<FileTransferTask>("retry_file_transfer", { id }),
   clearFinishedFileTransfers: (serverId: string) => call<void>("clear_finished_file_transfers", { serverId }),
+  mcpStatus: () => call<McpStatus>("get_mcp_status"),
+  updateMcpSettings: (input: McpSettingsInput) => call<McpStatus>("update_mcp_settings", { input }),
+  rotateMcpToken: () => call<McpStatus>("rotate_mcp_token"),
+  mcpCalls: (limit = 30) => call<McpCallRecord[]>("list_mcp_calls", { limit }),
+  clearMcpCalls: () => call<void>("clear_mcp_calls"),
 };
 
 export async function openExternal(url: string) {

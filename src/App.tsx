@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, MonitorPlay, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import { Activity, Bot, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, MonitorPlay, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
@@ -21,6 +21,7 @@ import { MonitoringPage } from "./components/MonitoringPage";
 import { SecurityCenter } from "./components/SecurityCenter";
 import { TerminalWorkspace, type TerminalRequest } from "./components/TerminalWorkspace";
 import { RecordingsPage } from "./components/RecordingsPage";
+import { McpPage } from "./components/McpPage";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useAppUpdate } from "./hooks/useAppUpdate";
 
@@ -37,6 +38,7 @@ const pages = [
   { id: "discover", label: "发现 VPS", icon: Compass },
   { id: "free", label: "免费渠道", icon: Gift },
   { id: "activity", label: "操作记录", icon: ScrollText },
+  { id: "mcp", label: "AI 接入", icon: Bot },
   { id: "settings", label: "设置", icon: Settings },
 ] as const;
 
@@ -145,6 +147,7 @@ export default function App() {
         {page === "discover" && <DiscoveryPage />}
         {page === "free" && <FreePage />}
         {page === "activity" && <ActivityPage />}
+        {page === "mcp" && <McpPage />}
         {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} appUpdate={appUpdate} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
       </div>
     </main>

@@ -502,6 +502,49 @@ pub struct OperationLog {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettings {
+    pub enabled: bool,
+    pub port: u16,
+    pub allow_execute: bool,
+    pub allow_unknown_host: bool,
+    pub token: String,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 8799,
+            allow_execute: false,
+            allow_unknown_host: false,
+            token: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettingsInput {
+    pub enabled: bool,
+    pub port: u16,
+    pub allow_execute: bool,
+    pub allow_unknown_host: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCallRecord {
+    pub id: i64,
+    pub tool: String,
+    pub target: String,
+    pub success: bool,
+    pub duration_ms: u64,
+    pub summary: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSession {

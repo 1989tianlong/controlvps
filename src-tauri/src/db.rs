@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
+use rand_core::{OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
@@ -9,7 +10,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     AlertEvent, AlertKind, AlertStatus, AuthProfile, AuthProfileInput, CloudAccount,
     CloudAccountInput, CloudProvider, DataProtectionAction, DataProtectionInput,
-    DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, MetricSample,
+    DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, McpCallRecord,
+    McpSettings, McpSettingsInput, MetricSample,
     MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, ProtectionSourceKind,
     ResticRepositoryKind, Runbook, RunbookExecution, RunbookExecutionRequest,
     RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
@@ -99,6 +101,15 @@ impl Database {
              );
              CREATE INDEX IF NOT EXISTS idx_operation_logs_server
              ON operation_logs(server_id, id DESC);
+             CREATE TABLE IF NOT EXISTS mcp_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                success INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS snippets (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -2131,6 +2142,129 @@ impl Database {
         Ok(settings.clone())
     }
 
+    pub fn mcp_settings(&self) -> AppResult<McpSettings> {
+        let stored = self
+            .connection()?
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'mcp'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(value) = stored {
+            if let Ok(settings) = serde_json::from_str::<McpSettings>(&value) {
+                if !settings.token.is_empty() {
+                    return Ok(settings);
+                }
+            }
+        }
+        let settings = McpSettings {
+            token: random_token(),
+            ..McpSettings::default()
+        };
+        self.store_mcp_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn update_mcp_settings(&self, input: &McpSettingsInput) -> AppResult<McpSettings> {
+        if !(1024..=65535).contains(&input.port) {
+            return Err(AppError::Message(
+                "MCP 端口必须在 1024 到 65535 之间".into(),
+            ));
+        }
+        let current = self.mcp_settings()?;
+        let settings = McpSettings {
+            enabled: input.enabled,
+            port: input.port,
+            allow_execute: input.allow_execute,
+            allow_unknown_host: input.allow_unknown_host,
+            token: current.token,
+        };
+        self.store_mcp_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn rotate_mcp_token(&self) -> AppResult<McpSettings> {
+        let settings = McpSettings {
+            token: random_token(),
+            ..self.mcp_settings()?
+        };
+        self.store_mcp_settings(&settings)?;
+        Ok(settings)
+    }
+
+    fn store_mcp_settings(&self, settings: &McpSettings) -> AppResult<()> {
+        let value = serde_json::to_string(settings)
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        self.connection()?.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('mcp', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [value],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_mcp_call(
+        &self,
+        tool: &str,
+        target: &str,
+        success: bool,
+        duration_ms: u64,
+        summary: &str,
+    ) -> AppResult<McpCallRecord> {
+        let created_at = Utc::now().to_rfc3339();
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO mcp_calls (tool, target, success, duration_ms, summary, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                tool,
+                target,
+                success,
+                duration_ms as i64,
+                truncate_chars(summary, 500),
+                created_at
+            ],
+        )?;
+        let id = connection.last_insert_rowid();
+        Ok(McpCallRecord {
+            id,
+            tool: tool.to_string(),
+            target: target.to_string(),
+            success,
+            duration_ms,
+            summary: truncate_chars(summary, 500),
+            created_at,
+        })
+    }
+
+    pub fn list_mcp_calls(&self, limit: usize) -> AppResult<Vec<McpCallRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, tool, target, success, duration_ms, summary, created_at
+             FROM mcp_calls ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit.clamp(1, 500) as i64], |row| {
+            Ok(McpCallRecord {
+                id: row.get(0)?,
+                tool: row.get(1)?,
+                target: row.get(2)?,
+                success: row.get(3)?,
+                duration_ms: row.get(4)?,
+                summary: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+        let mut calls = rows.collect::<Result<Vec<_>, _>>()?;
+        calls.sort_by_key(|call| std::cmp::Reverse(call.id));
+        Ok(calls)
+    }
+
+    pub fn clear_mcp_calls(&self) -> AppResult<()> {
+        self.connection()?.execute("DELETE FROM mcp_calls", [])?;
+        Ok(())
+    }
+
     pub fn record_alert(
         &self,
         server: &Server,
@@ -2710,6 +2844,20 @@ fn validate_server(input: &ServerInput) -> AppResult<()> {
         return Err(AppError::Message("SSH 端口必须在 1 到 65535 之间".into()));
     }
     Ok(())
+}
+
+fn random_token() -> String {
+    let mut bytes = [0_u8; 24];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(limit).collect();
+    format!("{truncated}…")
 }
 
 fn clean(value: Option<&str>) -> Option<String> {

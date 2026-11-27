@@ -10,6 +10,7 @@ mod discovery;
 mod docker;
 mod error;
 mod files;
+mod mcp;
 mod metrics;
 mod models;
 mod recording;
@@ -27,10 +28,12 @@ mod tunnel;
 use alerts::AlertRegistry;
 use commands::AppPaths;
 use db::Database;
+use models::McpCallRecord;
 use runbook::RunbookExecutionRegistry;
 use scheduler::RunbookScheduler;
 use service_monitor::ServiceMonitorRegistry;
-use tauri::Manager;
+use std::sync::Arc;
+use tauri::{Emitter, Manager};
 use terminal::TerminalRegistry;
 use transfers::TransferRegistry;
 use tunnel::TunnelRegistry;
@@ -62,12 +65,30 @@ pub fn run() {
                 &paths,
                 app.state::<RunbookExecutionRegistry>().inner().clone(),
             ));
+            let mcp_settings = database.mcp_settings()?;
+            let handle = app.handle().clone();
+            let notify: Arc<dyn Fn(McpCallRecord) + Send + Sync> =
+                Arc::new(move |record: McpCallRecord| {
+                    let _ = handle.emit("mcp-call", record);
+                });
+            app.manage(mcp::McpServer::bootstrap(
+                database.clone(),
+                paths.known_hosts.clone(),
+                app.state::<RunbookExecutionRegistry>().inner().clone(),
+                &mcp_settings,
+                Some(notify),
+            ));
             app.manage(database);
             app.manage(paths);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::get_mcp_status,
+            commands::update_mcp_settings,
+            commands::rotate_mcp_token,
+            commands::list_mcp_calls,
+            commands::clear_mcp_calls,
             commands::fetch_vps_deals,
             commands::create_encrypted_backup,
             commands::preview_encrypted_backup,

@@ -323,6 +323,42 @@ export interface OperationLog {
   createdAt: string;
 }
 
+export interface McpToolInfo {
+  name: string;
+  title: string;
+  description: string;
+  write: boolean;
+}
+
+export interface McpStatus {
+  enabled: boolean;
+  port: number;
+  allowExecute: boolean;
+  allowUnknownHost: boolean;
+  token: string;
+  running: boolean;
+  endpoint: string;
+  error: string | null;
+  tools: McpToolInfo[];
+}
+
+export interface McpSettingsInput {
+  enabled: boolean;
+  port: number;
+  allowExecute: boolean;
+  allowUnknownHost: boolean;
+}
+
+export interface McpCallRecord {
+  id: number;
+  tool: string;
+  target: string;
+  success: boolean;
+  durationMs: number;
+  summary: string;
+  createdAt: string;
+}
+
 export interface TerminalSession {
   terminalId: string;
   fingerprint: string;
