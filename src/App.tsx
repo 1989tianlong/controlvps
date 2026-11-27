@@ -142,7 +142,7 @@ export default function App() {
       <div className="page">
         <UpdateBanner state={appUpdate.state} dismissed={appUpdate.dismissed} onInstall={() => void appUpdate.install()} onRestart={() => void appUpdate.restart()} onDismiss={appUpdate.dismiss} />
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
-        {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
+        {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} onMonitoring={() => navigate("monitoring")} onAutomation={() => { setAutomationMode("operations"); navigate("automation"); }} onSettings={() => navigate("settings")} />}
         <Suspense fallback={<div className="skeleton" />}>
           {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
           {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}

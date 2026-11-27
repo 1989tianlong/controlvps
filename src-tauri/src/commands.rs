@@ -15,24 +15,25 @@ use crate::files;
 use crate::metrics;
 use crate::recording::{RecordingDetail, RecordingSummary};
 use crate::models::{
-    ActionResult, AlertEvent, AuthMethod, AuthProfile, AuthProfileInput, BackupPreview,
-    BackupRestoreResult, BackupSummary, BatchResult, CloudAccount, CloudAccountInput,
-    CloudImportRequest, CloudImportResult, CloudPreview, ComposeAction, ComposeActionResult,
-    ComposeApplication, ComposeDeploymentHistory, ComposeDeploymentPlan, ComposeDeploymentResult,
-    ComposeEditInput, ComposeLogs, ComposeOverview, ConnectionReport, ConnectionTest,
-    DataProtectionInput, DataProtectionOverview, DataProtectionPolicy, DataProtectionRestoreResult,
-    DataProtectionRun, DockerAction, DockerActionResult, DockerLogs, DockerOverview, FileListing,
-    FileTransfer, FileTransferKind, FileTransferTask, McpCallRecord, McpSettingsInput, MetricSample,
-    MonitoringSettings,
-    OperationLog, PortForwardInput, PortForwardRule, QuickAction, Runbook, RunbookExecution,
-    RunbookExecutionRequest, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
-    RunbookTrigger, SecurityReport, Server, ServerGroup, ServerGroupInput, ServerInput,
-    ServerMetrics, ServiceCheckResult, ServiceEvent, ServiceMonitorInput, ServiceMonitorView,
-    ServiceNotificationInput, ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput,
-    SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
-    TerminalSession, TunnelStatus,
+    ActionCenterSummary, ActionResult, AlertEvent, AuthMethod, AuthProfile, AuthProfileInput,
+    BackupPreview, BackupRestoreResult, BackupSummary, BatchResult, CloudAccount,
+    CloudAccountInput, CloudImportRequest, CloudImportResult, CloudPreview, ComposeAction,
+    ComposeActionResult, ComposeApplication, ComposeDeploymentHistory, ComposeDeploymentPlan,
+    ComposeDeploymentResult, ComposeEditInput, ComposeLogs, ComposeOverview, ConnectionReport,
+    ConnectionTest, DataProtectionInput, DataProtectionOverview, DataProtectionPolicy,
+    DataProtectionRestoreResult, DataProtectionRun, DockerAction, DockerActionResult, DockerLogs,
+    DockerOverview, FileListing, FileTransfer, FileTransferKind, FileTransferTask, McpCallRecord,
+    McpSettingsInput, MetricSample, MonitoringSettings, NotificationChannel,
+    NotificationChannelInput, NotificationDelivery, OperationLog, PortForwardInput,
+    PortForwardRule, QuickAction, Runbook, RunbookExecution, RunbookExecutionRequest, RunbookInput,
+    RunbookResult, RunbookSchedule, RunbookScheduleInput, RunbookTrigger, SecurityReport, Server,
+    ServerGroup, ServerGroupInput, ServerInput, ServerMetrics, ServiceCheckResult, ServiceEvent,
+    ServiceMonitorInput, ServiceMonitorView, ServiceNotificationInput, ServiceNotificationSettings,
+    ServiceSample, Snippet, SnippetInput, SshConfigImport, SystemdAction, SystemdActionResult,
+    SystemdLogs, SystemdOverview, TerminalSession, TunnelStatus,
 };
 use crate::mcp::{McpServer, McpStatus};
+use crate::notifications;
 use crate::runbook::RunbookExecutionRegistry;
 use crate::security;
 use crate::service_monitor::{self, ServiceMonitorRegistry};
@@ -1979,6 +1980,73 @@ pub fn clear_finished_file_transfers(
     server_id: String,
 ) -> CommandResult<()> {
     transfers.clear_finished(&server_id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_notification_channels(
+    db: State<'_, Database>,
+) -> CommandResult<Vec<NotificationChannel>> {
+    db.list_notification_channels().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_notification_channel(
+    db: State<'_, Database>,
+    input: NotificationChannelInput,
+) -> CommandResult<NotificationChannel> {
+    notifications::create_channel(&db, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn update_notification_channel(
+    db: State<'_, Database>,
+    id: String,
+    input: NotificationChannelInput,
+) -> CommandResult<NotificationChannel> {
+    notifications::update_channel(&db, &id, &input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn set_notification_channel_enabled(
+    db: State<'_, Database>,
+    id: String,
+    enabled: bool,
+) -> CommandResult<NotificationChannel> {
+    db.set_notification_channel_enabled(&id, enabled)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_notification_channel(db: State<'_, Database>, id: String) -> CommandResult<()> {
+    notifications::delete_channel(&db, &id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn test_notification_channel(
+    db: State<'_, Database>,
+    id: String,
+) -> CommandResult<NotificationDelivery> {
+    let database = db.inner().clone();
+    run_blocking(move || notifications::send_test(&database, &id)).await
+}
+
+#[tauri::command]
+pub fn list_notification_deliveries(
+    db: State<'_, Database>,
+    limit: Option<usize>,
+) -> CommandResult<Vec<NotificationDelivery>> {
+    db.list_notification_deliveries(limit.unwrap_or(50))
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn clear_notification_deliveries(db: State<'_, Database>) -> CommandResult<()> {
+    db.clear_notification_deliveries().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_action_center(db: State<'_, Database>) -> CommandResult<ActionCenterSummary> {
+    db.action_center_summary().map_err(Into::into)
 }
 
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {

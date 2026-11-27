@@ -553,6 +553,8 @@ export interface DataProtectionInput {
   databaseUser?: string;
   databasePassword?: string;
   keepLast: number;
+  scheduleEnabled?: boolean;
+  scheduleIntervalMinutes?: number;
 }
 
 export interface DataProtectionPolicy {
@@ -571,6 +573,12 @@ export interface DataProtectionPolicy {
   hasRepositoryPassword: boolean;
   hasS3Credentials: boolean;
   hasDatabasePassword: boolean;
+  scheduleEnabled: boolean;
+  scheduleIntervalMinutes: number;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastStatus?: string;
+  lastError?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1019,4 +1027,98 @@ export interface RecordingFrame {
 export interface RecordingDetail {
   summary: RecordingSummary;
   frames: RecordingFrame[];
+}
+
+export type NotificationChannelKind = "telegram" | "feishu" | "dingtalk" | "wecom" | "ntfy" | "bark" | "webhook";
+export type NotificationEventKind = "host_alert" | "service_alert" | "certificate_expiry" | "backup_failure" | "runbook_failure" | "server_expiry";
+export type NotificationSeverity = "info" | "warning" | "critical";
+
+export interface NotificationChannelInput {
+  name: string;
+  kind: NotificationChannelKind;
+  enabled: boolean;
+  target: string;
+  secret?: string;
+  signingSecret?: string;
+  clearSigningSecret?: boolean;
+  events: NotificationEventKind[];
+  minSeverity: NotificationSeverity;
+  quietStart?: string;
+  quietEnd?: string;
+}
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  kind: NotificationChannelKind;
+  enabled: boolean;
+  target: string;
+  events: NotificationEventKind[];
+  minSeverity: NotificationSeverity;
+  quietStart?: string;
+  quietEnd?: string;
+  hasSecret: boolean;
+  hasSigningSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationDelivery {
+  id: number;
+  channelId: string;
+  channelName: string;
+  eventKind: NotificationEventKind;
+  severity: NotificationSeverity;
+  title: string;
+  message: string;
+  success: boolean;
+  error?: string;
+  attempts: number;
+  createdAt: string;
+}
+
+export interface ExpiringServerItem {
+  serverId: string;
+  serverName: string;
+  provider?: string;
+  expiresAt: string;
+  daysRemaining: number;
+}
+
+export interface ExpiringCertificateItem {
+  monitorId: string;
+  monitorName: string;
+  target: string;
+  expiresAt: string;
+  daysRemaining: number;
+  warningDays: number;
+}
+
+export interface FailedBackupItem {
+  policyId: string;
+  policyName: string;
+  serverId: string;
+  serverName: string;
+  error: string;
+  failedAt: string;
+}
+
+export interface FailedRunbookItem {
+  executionId: string;
+  runbookName: string;
+  status: RunbookExecutionStatus;
+  failureCount: number;
+  error?: string;
+  createdAt: string;
+}
+
+export interface ActionCenterSummary {
+  expiringServers: ExpiringServerItem[];
+  activeHostAlerts: AlertEvent[];
+  activeServiceEvents: ServiceEvent[];
+  expiringCertificates: ExpiringCertificateItem[];
+  failedBackups: FailedBackupItem[];
+  failedRunbooks: FailedRunbookItem[];
+  enabledNotificationChannels: number;
+  scheduledBackupPolicies: number;
 }

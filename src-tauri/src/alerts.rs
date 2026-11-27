@@ -6,7 +6,10 @@ use tauri::{AppHandle, Emitter};
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
-use crate::models::{AlertKind, AlertStatus, Server, ServerMetrics};
+use crate::models::{
+    AlertKind, AlertStatus, NotificationEventKind, NotificationSeverity, Server, ServerMetrics,
+};
+use crate::notifications::{self, NotificationDispatchEvent};
 
 #[derive(Default)]
 struct AlertState {
@@ -207,6 +210,29 @@ fn change(
         spec.value,
         spec.threshold,
     )?;
+    let severity = match (status, spec.kind) {
+        (AlertStatus::Recovered, _) => NotificationSeverity::Info,
+        (AlertStatus::Triggered, AlertKind::Offline | AlertKind::Disk) => {
+            NotificationSeverity::Critical
+        }
+        (AlertStatus::Triggered, AlertKind::Cpu | AlertKind::Memory) => {
+            NotificationSeverity::Warning
+        }
+    };
+    let status_label = match status {
+        AlertStatus::Triggered => "告警",
+        AlertStatus::Recovered => "恢复",
+    };
+    notifications::dispatch_async(
+        db.clone(),
+        NotificationDispatchEvent {
+            kind: NotificationEventKind::HostAlert,
+            severity,
+            title: format!("{} · 主机{}", server.name, status_label),
+            message: event.message.clone(),
+            target: Some(format!("{} ({})", server.name, server.host)),
+        },
+    );
     let _ = app.emit("monitoring-alert", event);
     Ok(())
 }

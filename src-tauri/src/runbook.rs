@@ -91,6 +91,7 @@ pub fn start_execution(
     let worker_db = db.clone();
     let worker_registry = registry.clone();
     let worker_id = id.clone();
+    let worker_runbook_name = request.runbook.name.clone();
     let spawn = std::thread::Builder::new()
         .name(format!("runbook-{id}"))
         .spawn(move || {
@@ -133,6 +134,34 @@ pub fn start_execution(
                     let status = execution_status(&result, &worker_id, &worker_registry);
                     let _ =
                         worker_db.finish_runbook_execution(&worker_id, status, Some(&result), None);
+                    if matches!(
+                        status,
+                        RunbookExecutionStatus::Failed
+                            | RunbookExecutionStatus::Partial
+                            | RunbookExecutionStatus::TimedOut
+                    ) {
+                        let severity = if status == RunbookExecutionStatus::Partial {
+                            crate::models::NotificationSeverity::Warning
+                        } else {
+                            crate::models::NotificationSeverity::Critical
+                        };
+                        crate::notifications::dispatch_async(
+                            worker_db.clone(),
+                            crate::notifications::NotificationDispatchEvent {
+                                kind: crate::models::NotificationEventKind::RunbookFailure,
+                                severity,
+                                title: format!("Runbook「{}」执行未全部成功", result.runbook_name),
+                                message: format!(
+                                    "成功 {} 台，失败 {} 台，跳过 {} 台（状态：{:?}）",
+                                    result.success_count,
+                                    result.failure_count,
+                                    result.skipped_count,
+                                    status
+                                ),
+                                target: Some(result.runbook_name.clone()),
+                            },
+                        );
+                    }
                 }
                 Err(error) => {
                     let message = error.to_string();
@@ -141,6 +170,16 @@ pub fn start_execution(
                         RunbookExecutionStatus::Failed,
                         None,
                         Some(&message),
+                    );
+                    crate::notifications::dispatch_async(
+                        worker_db.clone(),
+                        crate::notifications::NotificationDispatchEvent {
+                            kind: crate::models::NotificationEventKind::RunbookFailure,
+                            severity: crate::models::NotificationSeverity::Critical,
+                            title: format!("Runbook「{}」执行失败", worker_runbook_name),
+                            message,
+                            target: Some(worker_runbook_name),
+                        },
                     );
                 }
             }

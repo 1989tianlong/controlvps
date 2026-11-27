@@ -13,6 +13,7 @@ mod files;
 mod mcp;
 mod metrics;
 mod models;
+mod notifications;
 mod recording;
 mod runbook;
 mod scheduler;
@@ -208,6 +209,15 @@ pub fn run() {
             commands::cancel_file_transfer,
             commands::retry_file_transfer,
             commands::clear_finished_file_transfers,
+            commands::list_notification_channels,
+            commands::create_notification_channel,
+            commands::update_notification_channel,
+            commands::set_notification_channel_enabled,
+            commands::delete_notification_channel,
+            commands::test_notification_channel,
+            commands::list_notification_deliveries,
+            commands::clear_notification_deliveries,
+            commands::get_action_center,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ControlVPS")

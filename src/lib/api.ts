@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import type {
+  ActionCenterSummary,
   ActionResult,
   AlertEvent,
   AppInfo,
@@ -23,6 +24,9 @@ import type {
   DataProtectionRestoreResult,
   DataProtectionRun,
   DealFeed,
+  NotificationChannel,
+  NotificationChannelInput,
+  NotificationDelivery,
   RecordingDetail,
   RecordingHandle,
   RecordingSummary,
@@ -105,7 +109,19 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls", "list_notification_channels", "list_notification_deliveries"].includes(command)) return [] as T;
+    if (command === "get_action_center") {
+      return {
+        expiringServers: [],
+        activeHostAlerts: [],
+        activeServiceEvents: [],
+        expiringCertificates: [],
+        failedBackups: [],
+        failedRunbooks: [],
+        enabledNotificationChannels: 0,
+        scheduledBackupPolicies: 0,
+      } as T;
+    }
     if (command === "get_mcp_status") {
       return {
         enabled: false,
@@ -137,7 +153,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.10.1",
+        version: "1.11.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "系统钥匙串",
@@ -336,6 +352,19 @@ export const api = {
   rotateMcpToken: () => call<McpStatus>("rotate_mcp_token"),
   mcpCalls: (limit = 30) => call<McpCallRecord[]>("list_mcp_calls", { limit }),
   clearMcpCalls: () => call<void>("clear_mcp_calls"),
+  listNotificationChannels: () => call<NotificationChannel[]>("list_notification_channels"),
+  createNotificationChannel: (input: NotificationChannelInput) =>
+    call<NotificationChannel>("create_notification_channel", { input }),
+  updateNotificationChannel: (id: string, input: NotificationChannelInput) =>
+    call<NotificationChannel>("update_notification_channel", { id, input }),
+  setNotificationChannelEnabled: (id: string, enabled: boolean) =>
+    call<NotificationChannel>("set_notification_channel_enabled", { id, enabled }),
+  deleteNotificationChannel: (id: string) => call<void>("delete_notification_channel", { id }),
+  testNotificationChannel: (id: string) => call<NotificationDelivery>("test_notification_channel", { id }),
+  listNotificationDeliveries: (limit = 50) =>
+    call<NotificationDelivery[]>("list_notification_deliveries", { limit }),
+  clearNotificationDeliveries: () => call<void>("clear_notification_deliveries"),
+  actionCenter: () => call<ActionCenterSummary>("get_action_center"),
 };
 
 export async function openExternal(url: string) {

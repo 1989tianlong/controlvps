@@ -15,9 +15,11 @@ use x509_parser::parse_x509_certificate;
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    ServiceCheckResult, ServiceEvent, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind,
+    AlertStatus, NotificationEventKind, NotificationSeverity, ServiceCheckResult, ServiceEvent,
+    ServiceEventKind, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind,
     ServiceNotificationInput, ServiceNotificationSettings, ServiceProbe,
 };
+use crate::notifications::{self, NotificationDispatchEvent};
 use crate::utils;
 
 const WEBHOOK_ACCOUNT: &str = "service-notifications:webhook-url";
@@ -90,6 +92,39 @@ pub fn check(
     let mut notification_error = None;
     for event in &events {
         let _ = app.emit("service-monitor-event", event);
+        let (event_kind, severity) = match (event.kind, event.status) {
+            (ServiceEventKind::Certificate, AlertStatus::Triggered) => (
+                NotificationEventKind::CertificateExpiry,
+                NotificationSeverity::Warning,
+            ),
+            (ServiceEventKind::Certificate, AlertStatus::Recovered) => (
+                NotificationEventKind::CertificateExpiry,
+                NotificationSeverity::Info,
+            ),
+            (ServiceEventKind::Availability, AlertStatus::Triggered) => (
+                NotificationEventKind::ServiceAlert,
+                NotificationSeverity::Critical,
+            ),
+            (ServiceEventKind::Availability, AlertStatus::Recovered) => (
+                NotificationEventKind::ServiceAlert,
+                NotificationSeverity::Info,
+            ),
+        };
+        let suffix = if event.status == AlertStatus::Triggered {
+            "异常"
+        } else {
+            "已恢复"
+        };
+        notifications::dispatch_async(
+            db.clone(),
+            NotificationDispatchEvent {
+                kind: event_kind,
+                severity,
+                title: format!("{} · 服务{}", event.monitor_name, suffix),
+                message: event.message.clone(),
+                target: Some(monitor.target.clone()),
+            },
+        );
         if notification_error.is_none() {
             if let Err(error) = send_event(db, event) {
                 notification_error = Some(format!("服务状态已保存，但 Webhook 发送失败：{error}"));

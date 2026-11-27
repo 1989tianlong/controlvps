@@ -9,11 +9,13 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    AlertEvent, AlertKind, AlertStatus, AuthProfile, AuthProfileInput, CloudAccount,
-    CloudAccountInput, CloudProvider, DataProtectionAction, DataProtectionInput,
-    DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, McpCallRecord,
-    McpSettings, McpSettingsInput, MetricSample,
-    MonitoringSettings, OperationLog, PortForwardInput, PortForwardRule, ProtectionSourceKind,
+    ActionCenterSummary, AlertEvent, AlertKind, AlertStatus, AuthProfile, AuthProfileInput,
+    CloudAccount, CloudAccountInput, CloudProvider, DataProtectionAction, DataProtectionInput,
+    DataProtectionPolicy, DataProtectionRun, DataProtectionRunStatus, ExpiringCertificateItem,
+    ExpiringServerItem, FailedBackupItem, FailedRunbookItem, McpCallRecord, McpSettings,
+    McpSettingsInput, MetricSample, MonitoringSettings, NotificationChannel,
+    NotificationChannelInput, NotificationChannelKind, NotificationDelivery, NotificationEventKind,
+    NotificationSeverity, OperationLog, PortForwardInput, PortForwardRule, ProtectionSourceKind,
     ResticRepositoryKind, Runbook, RunbookExecution, RunbookExecutionRequest,
     RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
     RunbookStep, RunbookTrigger, Server, ServerGroup, ServerGroupInput, ServerInput, ServerMetrics,
@@ -23,7 +25,7 @@ use crate::models::{
 #[cfg(not(test))]
 use crate::utils;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 #[cfg(not(test))]
 const MCP_TOKEN_ACCOUNT: &str = "mcp:bearer-token";
 const PRUNE_EVERY_N_WRITES: u64 = 50;
@@ -293,6 +295,12 @@ impl Database {
                 has_repository_password INTEGER NOT NULL DEFAULT 0,
                 has_s3_credentials INTEGER NOT NULL DEFAULT 0,
                 has_database_password INTEGER NOT NULL DEFAULT 0,
+                schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                schedule_interval_minutes INTEGER NOT NULL DEFAULT 1440,
+                next_run_at TEXT,
+                last_run_at TEXT,
+                last_status TEXT,
+                last_error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
@@ -315,6 +323,36 @@ impl Database {
              );
              CREATE INDEX IF NOT EXISTS idx_data_protection_runs_policy
              ON data_protection_runs(policy_id, started_at DESC);
+             CREATE TABLE IF NOT EXISTS notification_channels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                target TEXT NOT NULL DEFAULT '',
+                events TEXT NOT NULL DEFAULT '[]',
+                min_severity TEXT NOT NULL DEFAULT 'warning',
+                quiet_start TEXT,
+                quiet_end TEXT,
+                has_secret INTEGER NOT NULL DEFAULT 0,
+                has_signing_secret INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS notification_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                channel_name TEXT NOT NULL,
+                event_kind TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                error TEXT,
+                attempts INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created
+             ON notification_deliveries(id DESC);
              CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -381,13 +419,37 @@ impl Database {
                     )?;
                 }
             }
+            for (column, definition) in [
+                ("schedule_enabled", "INTEGER NOT NULL DEFAULT 0"),
+                ("schedule_interval_minutes", "INTEGER NOT NULL DEFAULT 1440"),
+                ("next_run_at", "TEXT"),
+                ("last_run_at", "TEXT"),
+                ("last_status", "TEXT"),
+                ("last_error", "TEXT"),
+            ] {
+                let exists = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('data_protection_policies') WHERE name = ?1)",
+                    [column],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !exists {
+                    tx.execute(
+                        &format!(
+                            "ALTER TABLE data_protection_policies ADD COLUMN {column} {definition}"
+                        ),
+                        [],
+                    )?;
+                }
+            }
             tx.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_metric_samples_collected
                  ON metric_samples(collected_at);
                  CREATE INDEX IF NOT EXISTS idx_service_samples_monitor_checked
                  ON service_samples(monitor_id, checked_at);
                  CREATE INDEX IF NOT EXISTS idx_service_samples_checked
-                 ON service_samples(checked_at);",
+                 ON service_samples(checked_at);
+                 CREATE INDEX IF NOT EXISTS idx_data_protection_due
+                 ON data_protection_policies(schedule_enabled, next_run_at);",
             )?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -1510,7 +1572,8 @@ impl Database {
             "SELECT id, server_id, name, repository_kind, repository, source_kind, paths,
                     volume_name, database_container, database_name, database_user, keep_last,
                     has_repository_password, has_s3_credentials, has_database_password,
-                    created_at, updated_at
+                    schedule_enabled, schedule_interval_minutes, next_run_at, last_run_at,
+                    last_status, last_error, created_at, updated_at
              FROM data_protection_policies WHERE server_id = ?1
              ORDER BY name COLLATE NOCASE, created_at",
         )?;
@@ -1524,7 +1587,8 @@ impl Database {
                 "SELECT id, server_id, name, repository_kind, repository, source_kind, paths,
                         volume_name, database_container, database_name, database_user, keep_last,
                         has_repository_password, has_s3_credentials, has_database_password,
-                        created_at, updated_at
+                        schedule_enabled, schedule_interval_minutes, next_run_at, last_run_at,
+                        last_status, last_error, created_at, updated_at
                  FROM data_protection_policies WHERE id = ?1",
                 [id],
                 row_to_data_protection_policy,
@@ -1545,14 +1609,23 @@ impl Database {
     ) -> AppResult<DataProtectionPolicy> {
         self.get_server(server_id)?;
         validate_data_protection(input, false, false)?;
-        let now = Utc::now().to_rfc3339();
+        let interval_minutes = validate_backup_schedule_interval(
+            input.schedule_enabled,
+            input.schedule_interval_minutes,
+        )?;
+        let now_dt = Utc::now();
+        let now = now_dt.to_rfc3339();
+        let next_run_at = input
+            .schedule_enabled
+            .then(|| (now_dt + Duration::minutes(i64::from(interval_minutes))).to_rfc3339());
         self.connection()?.execute(
             "INSERT INTO data_protection_policies (
                 id, server_id, name, repository_kind, repository, source_kind, paths,
                 volume_name, database_container, database_name, database_user, keep_last,
                 has_repository_password, has_s3_credentials, has_database_password,
+                schedule_enabled, schedule_interval_minutes, next_run_at,
                 created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?15, ?16)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 id,
                 server_id,
@@ -1578,6 +1651,9 @@ impl Database {
                     .database_password
                     .as_deref()
                     .is_some_and(|value| !value.is_empty()),
+                input.schedule_enabled,
+                interval_minutes,
+                next_run_at,
                 now,
                 now,
             ],
@@ -1596,6 +1672,21 @@ impl Database {
             existing.has_repository_password,
             existing.has_s3_credentials,
         )?;
+        let interval_minutes = validate_backup_schedule_interval(
+            input.schedule_enabled,
+            input.schedule_interval_minutes,
+        )?;
+        let now_dt = Utc::now();
+        let next_run_at = if !input.schedule_enabled {
+            None
+        } else if existing.schedule_enabled
+            && existing.schedule_interval_minutes == interval_minutes
+            && existing.next_run_at.is_some()
+        {
+            existing.next_run_at.clone()
+        } else {
+            Some((now_dt + Duration::minutes(i64::from(interval_minutes))).to_rfc3339())
+        };
         let has_s3_credentials = input.repository_kind == ResticRepositoryKind::S3
             && (existing.has_s3_credentials
                 || match (
@@ -1615,7 +1706,9 @@ impl Database {
                 repository = ?4, source_kind = ?5, paths = ?6, volume_name = ?7,
                 database_container = ?8, database_name = ?9, database_user = ?10,
                 keep_last = ?11, has_repository_password = ?12,
-                has_s3_credentials = ?13, has_database_password = ?14, updated_at = ?15
+                has_s3_credentials = ?13, has_database_password = ?14,
+                schedule_enabled = ?15, schedule_interval_minutes = ?16, next_run_at = ?17,
+                updated_at = ?18
              WHERE id = ?1",
             params![
                 id,
@@ -1636,10 +1729,64 @@ impl Database {
                     || existing.has_repository_password,
                 has_s3_credentials,
                 has_database_password,
-                Utc::now().to_rfc3339(),
+                input.schedule_enabled,
+                interval_minutes,
+                next_run_at,
+                now_dt.to_rfc3339(),
             ],
         )?;
         self.get_data_protection_policy(id)
+    }
+
+    pub fn due_data_protection_policies(&self) -> AppResult<Vec<DataProtectionPolicy>> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, server_id, name, repository_kind, repository, source_kind, paths,
+                    volume_name, database_container, database_name, database_user, keep_last,
+                    has_repository_password, has_s3_credentials, has_database_password,
+                    schedule_enabled, schedule_interval_minutes, next_run_at, last_run_at,
+                    last_status, last_error, created_at, updated_at
+             FROM data_protection_policies
+             WHERE schedule_enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1
+             ORDER BY next_run_at",
+        )?;
+        let rows = statement.query_map([now], row_to_data_protection_policy)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn mark_data_protection_scheduled_started(&self, id: &str) -> AppResult<()> {
+        let policy = self.get_data_protection_policy(id)?;
+        let now = Utc::now();
+        let next = now + Duration::minutes(i64::from(policy.schedule_interval_minutes.max(60)));
+        self.connection()?.execute(
+            "UPDATE data_protection_policies
+             SET next_run_at = ?2, last_status = 'running', last_error = NULL, updated_at = ?3
+             WHERE id = ?1",
+            params![id, next.to_rfc3339(), now.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_data_protection_scheduled_result(
+        &self,
+        id: &str,
+        succeeded: bool,
+        error: Option<&str>,
+    ) -> AppResult<()> {
+        let now = Utc::now().to_rfc3339();
+        self.connection()?.execute(
+            "UPDATE data_protection_policies
+             SET last_run_at = ?2, last_status = ?3, last_error = ?4, updated_at = ?2
+             WHERE id = ?1",
+            params![
+                id,
+                now,
+                if succeeded { "succeeded" } else { "failed" },
+                error
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn delete_data_protection_policy(&self, id: &str) -> AppResult<()> {
@@ -2214,6 +2361,10 @@ impl Database {
                 "DELETE FROM data_protection_runs WHERE id NOT IN (SELECT id FROM data_protection_runs ORDER BY started_at DESC LIMIT 500)",
                 [],
             );
+            let _ = connection.execute(
+                "DELETE FROM notification_deliveries WHERE id NOT IN (SELECT id FROM notification_deliveries ORDER BY id DESC LIMIT 500)",
+                [],
+            );
         }
         Ok(())
     }
@@ -2506,6 +2657,361 @@ impl Database {
         )?;
         let rows = statement.query_map([], row_to_alert_event)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_app_setting(&self, key: &str) -> AppResult<Option<String>> {
+        self.connection()?
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn set_app_setting(&self, key: &str, value: &str) -> AppResult<()> {
+        self.connection()?.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_notification_channels(&self) -> AppResult<Vec<NotificationChannel>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, kind, enabled, target, events, min_severity, quiet_start,
+                    quiet_end, has_secret, has_signing_secret, created_at, updated_at
+             FROM notification_channels ORDER BY created_at DESC",
+        )?;
+        let rows = statement.query_map([], row_to_notification_channel)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_notification_channel(&self, id: &str) -> AppResult<NotificationChannel> {
+        self.connection()?
+            .query_row(
+                "SELECT id, name, kind, enabled, target, events, min_severity, quiet_start,
+                        quiet_end, has_secret, has_signing_secret, created_at, updated_at
+                 FROM notification_channels WHERE id = ?1",
+                [id],
+                row_to_notification_channel,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::Message("未找到这个通知渠道".into())
+                }
+                other => other.into(),
+            })
+    }
+
+    pub fn create_notification_channel(
+        &self,
+        id: &str,
+        input: &NotificationChannelInput,
+    ) -> AppResult<NotificationChannel> {
+        let now = Utc::now().to_rfc3339();
+        let has_secret = input
+            .secret
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_signing_secret = input
+            .signing_secret
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        self.connection()?.execute(
+            "INSERT INTO notification_channels (
+                id, name, kind, enabled, target, events, min_severity, quiet_start, quiet_end,
+                has_secret, has_signing_secret, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                id,
+                input.name.trim(),
+                notification_channel_kind(input.kind),
+                input.enabled,
+                input.target.trim(),
+                json_string(&input.events)?,
+                notification_severity(input.min_severity),
+                clean(input.quiet_start.as_deref()),
+                clean(input.quiet_end.as_deref()),
+                has_secret,
+                has_signing_secret,
+                now,
+                now,
+            ],
+        )?;
+        self.get_notification_channel(id)
+    }
+
+    pub fn update_notification_channel(
+        &self,
+        id: &str,
+        input: &NotificationChannelInput,
+    ) -> AppResult<NotificationChannel> {
+        let existing = self.get_notification_channel(id)?;
+        let has_secret = existing.has_secret
+            || input
+                .secret
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
+        let has_signing_secret = if input.clear_signing_secret {
+            false
+        } else {
+            existing.has_signing_secret
+                || input
+                    .signing_secret
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        };
+        self.connection()?.execute(
+            "UPDATE notification_channels
+             SET name = ?2, kind = ?3, enabled = ?4, target = ?5, events = ?6,
+                 min_severity = ?7, quiet_start = ?8, quiet_end = ?9,
+                 has_secret = ?10, has_signing_secret = ?11, updated_at = ?12
+             WHERE id = ?1",
+            params![
+                id,
+                input.name.trim(),
+                notification_channel_kind(input.kind),
+                input.enabled,
+                input.target.trim(),
+                json_string(&input.events)?,
+                notification_severity(input.min_severity),
+                clean(input.quiet_start.as_deref()),
+                clean(input.quiet_end.as_deref()),
+                has_secret,
+                has_signing_secret,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        self.get_notification_channel(id)
+    }
+
+    pub fn set_notification_channel_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> AppResult<NotificationChannel> {
+        let changed = self.connection()?.execute(
+            "UPDATE notification_channels SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, enabled, Utc::now().to_rfc3339()],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Message("未找到这个通知渠道".into()));
+        }
+        self.get_notification_channel(id)
+    }
+
+    pub fn delete_notification_channel(&self, id: &str) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM notification_channels WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_notification_delivery(
+        &self,
+        channel_id: &str,
+        channel_name: &str,
+        event_kind: NotificationEventKind,
+        severity: NotificationSeverity,
+        title: &str,
+        message: &str,
+        success: bool,
+        error: Option<&str>,
+        attempts: u32,
+    ) -> AppResult<NotificationDelivery> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO notification_deliveries (
+                channel_id, channel_name, event_kind, severity, title, message,
+                success, error, attempts, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                channel_id,
+                channel_name,
+                notification_event_kind(event_kind),
+                notification_severity(severity),
+                title,
+                message,
+                success,
+                error,
+                attempts,
+                now,
+            ],
+        )?;
+        let id = connection.last_insert_rowid();
+        Ok(NotificationDelivery {
+            id,
+            channel_id: channel_id.to_string(),
+            channel_name: channel_name.to_string(),
+            event_kind,
+            severity,
+            title: title.to_string(),
+            message: message.to_string(),
+            success,
+            error: error.map(str::to_string),
+            attempts,
+            created_at: now,
+        })
+    }
+
+    pub fn list_notification_deliveries(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<NotificationDelivery>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, channel_id, channel_name, event_kind, severity, title, message,
+                    success, error, attempts, created_at
+             FROM notification_deliveries ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit.clamp(1, 200) as i64], row_to_notification_delivery)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn clear_notification_deliveries(&self) -> AppResult<()> {
+        self.connection()?
+            .execute("DELETE FROM notification_deliveries", [])?;
+        Ok(())
+    }
+
+    pub fn action_center_summary(&self) -> AppResult<ActionCenterSummary> {
+        let servers = self.list_servers()?;
+        let today = Utc::now().date_naive();
+        let mut expiring_servers = Vec::new();
+        for server in &servers {
+            if let Some(raw) = server.expires_at.as_deref() {
+                if let Some(date) = parse_expiry_date(raw) {
+                    let days = (date - today).num_days();
+                    if days <= 30 {
+                        expiring_servers.push(ExpiringServerItem {
+                            server_id: server.id.clone(),
+                            server_name: server.name.clone(),
+                            provider: server.provider.clone(),
+                            expires_at: raw.to_string(),
+                            days_remaining: days,
+                        });
+                    }
+                }
+            }
+        }
+        expiring_servers.sort_by_key(|item| item.days_remaining);
+
+        let active_host_alerts = self.list_active_alerts()?;
+        let connection = self.connection()?;
+
+        let mut stmt = connection.prepare(
+            "SELECT e.id, e.monitor_id, m.name, e.kind, e.status, e.message, e.created_at
+             FROM service_events e JOIN service_monitors m ON m.id = e.monitor_id
+             WHERE e.status = 'triggered' AND e.id IN (
+                SELECT MAX(id) FROM service_events GROUP BY monitor_id, kind
+             ) ORDER BY e.id DESC LIMIT 20",
+        )?;
+        let active_service_events = stmt
+            .query_map([], row_to_service_event)?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut stmt = connection.prepare(
+            "SELECT m.id, m.name, m.target, s.certificate_expires_at,
+                    s.certificate_days_remaining, m.certificate_warning_days
+             FROM service_monitors m
+             JOIN service_samples s ON s.id = (
+                SELECT MAX(id) FROM service_samples WHERE monitor_id = m.id
+             )
+             WHERE m.enabled = 1
+               AND s.certificate_expires_at IS NOT NULL
+               AND s.certificate_days_remaining IS NOT NULL
+               AND s.certificate_days_remaining <= m.certificate_warning_days
+             ORDER BY s.certificate_days_remaining ASC",
+        )?;
+        let expiring_certificates = stmt
+            .query_map([], |row| {
+                Ok(ExpiringCertificateItem {
+                    monitor_id: row.get(0)?,
+                    monitor_name: row.get(1)?,
+                    target: row.get(2)?,
+                    expires_at: row.get(3)?,
+                    days_remaining: row.get(4)?,
+                    warning_days: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut stmt = connection.prepare(
+            "SELECT p.id, p.name, p.server_id, s.name, COALESCE(r.error, p.last_error, '备份执行失败'),
+                    COALESCE(r.finished_at, r.started_at, p.updated_at)
+             FROM data_protection_policies p
+             JOIN servers s ON s.id = p.server_id
+             JOIN data_protection_runs r ON r.id = (
+                SELECT id FROM data_protection_runs
+                WHERE policy_id = p.id ORDER BY started_at DESC LIMIT 1
+             )
+             WHERE r.status = 'failed'
+             ORDER BY r.started_at DESC LIMIT 20",
+        )?;
+        let failed_backups = stmt
+            .query_map([], |row| {
+                Ok(FailedBackupItem {
+                    policy_id: row.get(0)?,
+                    policy_name: row.get(1)?,
+                    server_id: row.get(2)?,
+                    server_name: row.get(3)?,
+                    error: row.get(4)?,
+                    failed_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let cutoff = (Utc::now() - Duration::hours(72)).to_rfc3339();
+        let mut stmt = connection.prepare(
+            "SELECT id, runbook_name, status, failure_count, error, created_at
+             FROM runbook_executions
+             WHERE created_at >= ?1
+               AND status IN ('failed', 'partial', 'timed_out', 'interrupted')
+             ORDER BY created_at DESC LIMIT 10",
+        )?;
+        let failed_runbooks = stmt
+            .query_map([cutoff], |row| {
+                Ok(FailedRunbookItem {
+                    execution_id: row.get(0)?,
+                    runbook_name: row.get(1)?,
+                    status: parse_enum(&row.get::<_, String>(2)?)?,
+                    failure_count: row.get(3)?,
+                    error: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let enabled_notification_channels: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM notification_channels WHERE enabled = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let scheduled_backup_policies: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM data_protection_policies WHERE schedule_enabled = 1",
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(ActionCenterSummary {
+            expiring_servers,
+            active_host_alerts,
+            active_service_events,
+            expiring_certificates,
+            failed_backups,
+            failed_runbooks,
+            enabled_notification_channels: enabled_notification_channels.max(0) as usize,
+            scheduled_backup_policies: scheduled_backup_policies.max(0) as usize,
+        })
     }
 }
 
@@ -3240,9 +3746,105 @@ fn row_to_data_protection_policy(row: &Row<'_>) -> rusqlite::Result<DataProtecti
         has_repository_password: row.get(12)?,
         has_s3_credentials: row.get(13)?,
         has_database_password: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        schedule_enabled: row.get(15)?,
+        schedule_interval_minutes: row.get(16)?,
+        next_run_at: row.get(17)?,
+        last_run_at: row.get(18)?,
+        last_status: row.get(19)?,
+        last_error: row.get(20)?,
+        created_at: row.get(21)?,
+        updated_at: row.get(22)?,
     })
+}
+
+fn validate_backup_schedule_interval(enabled: bool, minutes: u32) -> AppResult<u32> {
+    if !enabled {
+        return Ok(minutes.clamp(60, 43_200));
+    }
+    if !(60..=43_200).contains(&minutes) {
+        return Err(AppError::Message(
+            "定时备份间隔必须在 1 小时（60 分钟）到 30 天之间".into(),
+        ));
+    }
+    Ok(minutes)
+}
+
+fn notification_channel_kind(kind: NotificationChannelKind) -> &'static str {
+    match kind {
+        NotificationChannelKind::Telegram => "telegram",
+        NotificationChannelKind::Feishu => "feishu",
+        NotificationChannelKind::Dingtalk => "dingtalk",
+        NotificationChannelKind::Wecom => "wecom",
+        NotificationChannelKind::Ntfy => "ntfy",
+        NotificationChannelKind::Bark => "bark",
+        NotificationChannelKind::Webhook => "webhook",
+    }
+}
+
+fn notification_event_kind(kind: NotificationEventKind) -> &'static str {
+    match kind {
+        NotificationEventKind::HostAlert => "host_alert",
+        NotificationEventKind::ServiceAlert => "service_alert",
+        NotificationEventKind::CertificateExpiry => "certificate_expiry",
+        NotificationEventKind::BackupFailure => "backup_failure",
+        NotificationEventKind::RunbookFailure => "runbook_failure",
+        NotificationEventKind::ServerExpiry => "server_expiry",
+    }
+}
+
+fn notification_severity(severity: NotificationSeverity) -> &'static str {
+    match severity {
+        NotificationSeverity::Info => "info",
+        NotificationSeverity::Warning => "warning",
+        NotificationSeverity::Critical => "critical",
+    }
+}
+
+fn row_to_notification_channel(row: &Row<'_>) -> rusqlite::Result<NotificationChannel> {
+    let raw_events: String = row.get(5)?;
+    Ok(NotificationChannel {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        kind: parse_enum(&row.get::<_, String>(2)?)?,
+        enabled: row.get(3)?,
+        target: row.get(4)?,
+        events: serde_json::from_str(&raw_events).unwrap_or_default(),
+        min_severity: parse_enum(&row.get::<_, String>(6)?)?,
+        quiet_start: row.get(7)?,
+        quiet_end: row.get(8)?,
+        has_secret: row.get(9)?,
+        has_signing_secret: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+fn row_to_notification_delivery(row: &Row<'_>) -> rusqlite::Result<NotificationDelivery> {
+    Ok(NotificationDelivery {
+        id: row.get(0)?,
+        channel_id: row.get(1)?,
+        channel_name: row.get(2)?,
+        event_kind: parse_enum(&row.get::<_, String>(3)?)?,
+        severity: parse_enum(&row.get::<_, String>(4)?)?,
+        title: row.get(5)?,
+        message: row.get(6)?,
+        success: row.get(7)?,
+        error: row.get(8)?,
+        attempts: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
+fn parse_expiry_date(raw: &str) -> Option<chrono::NaiveDate> {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 10 {
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(&trimmed[..10], "%Y-%m-%d") {
+            return Some(date);
+        }
+    }
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|dt| dt.date_naive())
 }
 
 fn row_to_data_protection_run(row: &Row<'_>) -> rusqlite::Result<DataProtectionRun> {
@@ -3627,5 +4229,94 @@ mod tests {
         assert_eq!(view.uptime_24h, Some(50.0));
         assert_eq!(view.uptime_7d, Some(50.0));
         assert_eq!(view.uptime_30d, Some(50.0));
+    }
+
+    #[test]
+    fn notification_channels_deliveries_and_action_center() {
+        let db = Database::in_memory().unwrap();
+        let mut s = sample_server("expiring-vps", "10.0.0.9");
+        s.expires_at = Some((Utc::now() + Duration::days(3)).format("%Y-%m-%d").to_string());
+        let server = db.create_server(&s).unwrap();
+
+        let channel = db
+            .create_notification_channel(
+                "ch-1",
+                &NotificationChannelInput {
+                    name: "Ops Telegram".into(),
+                    kind: NotificationChannelKind::Telegram,
+                    enabled: true,
+                    target: "123456".into(),
+                    secret: Some("bot-token".into()),
+                    signing_secret: None,
+                    clear_signing_secret: false,
+                    events: vec![NotificationEventKind::HostAlert, NotificationEventKind::BackupFailure],
+                    min_severity: NotificationSeverity::Warning,
+                    quiet_start: Some("23:00".into()),
+                    quiet_end: Some("08:00".into()),
+                },
+            )
+            .unwrap();
+        assert!(channel.has_secret);
+        assert_eq!(db.list_notification_channels().unwrap().len(), 1);
+
+        db.record_notification_delivery(
+            &channel.id,
+            &channel.name,
+            NotificationEventKind::HostAlert,
+            NotificationSeverity::Critical,
+            "CPU",
+            "high",
+            true,
+            None,
+            1,
+        )
+        .unwrap();
+        assert_eq!(db.list_notification_deliveries(10).unwrap().len(), 1);
+
+        let policy = db
+            .create_data_protection_policy(
+                "pol-1",
+                &server.id,
+                &DataProtectionInput {
+                    name: "Daily DB".into(),
+                    repository_kind: ResticRepositoryKind::Local,
+                    repository: "/srv/restic".into(),
+                    repository_password: Some("strong-secret".into()),
+                    s3_access_key_id: None,
+                    s3_secret_access_key: None,
+                    source_kind: ProtectionSourceKind::Directory,
+                    paths: vec!["/etc".into()],
+                    volume_name: None,
+                    database_container: None,
+                    database_name: None,
+                    database_user: None,
+                    database_password: None,
+                    keep_last: 7,
+                    schedule_enabled: true,
+                    schedule_interval_minutes: 360,
+                },
+            )
+            .unwrap();
+        assert!(policy.schedule_enabled);
+        assert!(policy.next_run_at.is_some());
+
+        let run = db
+            .start_data_protection_run(&policy.id, DataProtectionAction::Backup, None)
+            .unwrap();
+        db.finish_data_protection_run(
+            &run.id,
+            DataProtectionRunStatus::Failed,
+            None,
+            "",
+            Some("connection refused"),
+            100,
+        )
+        .unwrap();
+
+        let summary = db.action_center_summary().unwrap();
+        assert_eq!(summary.expiring_servers.len(), 1);
+        assert_eq!(summary.failed_backups.len(), 1);
+        assert_eq!(summary.enabled_notification_channels, 1);
+        assert_eq!(summary.scheduled_backup_policies, 1);
     }
 }

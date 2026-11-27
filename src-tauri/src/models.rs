@@ -1279,6 +1279,14 @@ pub struct DataProtectionInput {
     pub database_user: Option<String>,
     pub database_password: Option<String>,
     pub keep_last: u32,
+    #[serde(default)]
+    pub schedule_enabled: bool,
+    #[serde(default = "default_backup_interval_minutes")]
+    pub schedule_interval_minutes: u32,
+}
+
+fn default_backup_interval_minutes() -> u32 {
+    1440
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1299,6 +1307,12 @@ pub struct DataProtectionPolicy {
     pub has_repository_password: bool,
     pub has_s3_credentials: bool,
     pub has_database_password: bool,
+    pub schedule_enabled: bool,
+    pub schedule_interval_minutes: u32,
+    pub next_run_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1404,4 +1418,154 @@ pub struct BackupRestoreResult {
     pub skipped_port_forwards: usize,
     pub imported_service_monitors: usize,
     pub skipped_service_monitors: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationChannelKind {
+    Telegram,
+    Feishu,
+    Dingtalk,
+    Wecom,
+    Ntfy,
+    Bark,
+    Webhook,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationEventKind {
+    HostAlert,
+    ServiceAlert,
+    CertificateExpiry,
+    BackupFailure,
+    RunbookFailure,
+    ServerExpiry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationChannelInput {
+    pub name: String,
+    pub kind: NotificationChannelKind,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub target: String,
+    pub secret: Option<String>,
+    pub signing_secret: Option<String>,
+    #[serde(default)]
+    pub clear_signing_secret: bool,
+    #[serde(default)]
+    pub events: Vec<NotificationEventKind>,
+    #[serde(default = "default_min_severity")]
+    pub min_severity: NotificationSeverity,
+    pub quiet_start: Option<String>,
+    pub quiet_end: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_min_severity() -> NotificationSeverity {
+    NotificationSeverity::Warning
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationChannel {
+    pub id: String,
+    pub name: String,
+    pub kind: NotificationChannelKind,
+    pub enabled: bool,
+    pub target: String,
+    pub events: Vec<NotificationEventKind>,
+    pub min_severity: NotificationSeverity,
+    pub quiet_start: Option<String>,
+    pub quiet_end: Option<String>,
+    pub has_secret: bool,
+    pub has_signing_secret: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationDelivery {
+    pub id: i64,
+    pub channel_id: String,
+    pub channel_name: String,
+    pub event_kind: NotificationEventKind,
+    pub severity: NotificationSeverity,
+    pub title: String,
+    pub message: String,
+    pub success: bool,
+    pub error: Option<String>,
+    pub attempts: u32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpiringServerItem {
+    pub server_id: String,
+    pub server_name: String,
+    pub provider: Option<String>,
+    pub expires_at: String,
+    pub days_remaining: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpiringCertificateItem {
+    pub monitor_id: String,
+    pub monitor_name: String,
+    pub target: String,
+    pub expires_at: String,
+    pub days_remaining: i32,
+    pub warning_days: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedBackupItem {
+    pub policy_id: String,
+    pub policy_name: String,
+    pub server_id: String,
+    pub server_name: String,
+    pub error: String,
+    pub failed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedRunbookItem {
+    pub execution_id: String,
+    pub runbook_name: String,
+    pub status: RunbookExecutionStatus,
+    pub failure_count: usize,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionCenterSummary {
+    pub expiring_servers: Vec<ExpiringServerItem>,
+    pub active_host_alerts: Vec<AlertEvent>,
+    pub active_service_events: Vec<ServiceEvent>,
+    pub expiring_certificates: Vec<ExpiringCertificateItem>,
+    pub failed_backups: Vec<FailedBackupItem>,
+    pub failed_runbooks: Vec<FailedRunbookItem>,
+    pub enabled_notification_channels: usize,
+    pub scheduled_backup_policies: usize,
 }

@@ -1,5 +1,8 @@
-import { ArrowRight, Compass, Plus, Server as ServerIcon, ShieldCheck } from "lucide-react";
-import type { Server, ServerMetrics } from "../types";
+import { useCallback, useEffect, useState } from "react";
+import { ArrowRight, BellRing, CheckCircle2, Compass, FolderArchive, Plus, RefreshCw, Server as ServerIcon, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
+import { api } from "../lib/api";
+import { formatTime } from "../lib/format";
+import type { ActionCenterSummary, Server, ServerMetrics } from "../types";
 
 interface Props {
   servers: Server[];
@@ -8,6 +11,9 @@ interface Props {
   onAdd: () => void;
   onServers: () => void;
   onDiscover: () => void;
+  onMonitoring: () => void;
+  onAutomation: () => void;
+  onSettings: () => void;
 }
 
 function currencySymbol(currency: string) {
@@ -21,7 +27,35 @@ function currencySymbol(currency: string) {
   }
 }
 
-export function OverviewPage({ servers, loading, metrics, onAdd, onServers, onDiscover }: Props) {
+export function OverviewPage({
+  servers,
+  loading,
+  metrics,
+  onAdd,
+  onServers,
+  onDiscover,
+  onMonitoring,
+  onAutomation,
+  onSettings,
+}: Props) {
+  const [actionCenter, setActionCenter] = useState<ActionCenterSummary>();
+  const [refreshingTodos, setRefreshingTodos] = useState(false);
+
+  const loadActionCenter = useCallback(async () => {
+    setRefreshingTodos(true);
+    try {
+      setActionCenter(await api.actionCenter());
+    } catch {
+      // 待办面板读取失败不阻塞总览
+    } finally {
+      setRefreshingTodos(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadActionCenter();
+  }, [loadActionCenter, servers.length]);
+
   const groups = new Set(servers.map((server) => server.groupName).filter(Boolean)).size;
   const measured = servers.filter((server) => metrics[server.id]).length;
   const costEntries = new Map<string, { total: number; count: number }>();
@@ -39,14 +73,123 @@ export function OverviewPage({ servers, loading, metrics, onAdd, onServers, onDi
     return days <= 30 ? [{ server, days }] : [];
   }).sort((a, b) => a.days - b.days);
   const unpriced = servers.filter((server) => typeof server.cost !== "number").length;
+
+  const urgentExpiring = actionCenter?.expiringServers.filter((item) => item.daysRemaining <= 14) ?? [];
+  const totalTodos = actionCenter
+    ? actionCenter.activeHostAlerts.length
+      + actionCenter.activeServiceEvents.length
+      + actionCenter.expiringCertificates.length
+      + actionCenter.failedBackups.length
+      + actionCenter.failedRunbooks.length
+      + urgentExpiring.length
+    : 0;
+
   return <>
     <div className="page-heading"><div><h1>VPS 工作台</h1><p>从同一个本地工作区管理连接与运行状态。</p></div><div className="heading-actions"><button className="btn" type="button" onClick={onDiscover}><Compass size={16} />发现 VPS</button><button className="btn btn-primary" type="button" onClick={onAdd}><Plus size={16} />添加 VPS</button></div></div>
     <div className="stats">
-      <div className="stat"><span className="stat-label">已保存服务器</span><strong className="stat-value">{servers.length}</strong><span className="stat-note">本机 SQLite</span></div>
-      <div className="stat"><span className="stat-label">资产分组</span><strong className="stat-value">{groups}</strong><span className="stat-note">按用途组织</span></div>
-      <div className="stat"><span className="stat-label">已有监控读数</span><strong className="stat-value">{measured}</strong><span className="stat-note">本次应用运行</span></div>
-      <div className="stat"><span className="stat-label">凭据保护</span><strong className="stat-value text-base">系统钥匙串</strong><span className="stat-note">不进入普通配置</span></div>
+      <div className="stat"><span className="stat-label">已保存服务器</span><strong className="stat-value">{servers.length}</strong><span className="stat-note">{groups} 个资产分组</span></div>
+      <div className="stat"><span className="stat-label">今日待办</span><strong className="stat-value">{totalTodos}</strong><span className="stat-note">{totalTodos === 0 ? "当前全部健康" : "告警/到期/失败项"}</span></div>
+      <div className="stat"><span className="stat-label">定时备份策略</span><strong className="stat-value">{actionCenter?.scheduledBackupPolicies ?? 0}</strong><span className="stat-note">{measured} 台已有监控读数</span></div>
+      <div className="stat"><span className="stat-label">外部告警渠道</span><strong className="stat-value">{actionCenter?.enabledNotificationChannels ?? 0}</strong><span className="stat-note">凭据由系统钥匙串保护</span></div>
     </div>
+
+    {actionCenter && <section className="panel mb-6" aria-label="今日运维待办">
+      <div className="panel-header">
+        <div className="flex items-center gap-3">
+          {totalTodos > 0 ? <TriangleAlert size={18} /> : <CheckCircle2 size={18} />}
+          <div>
+            <h2>今日运维待办</h2>
+            <span className="table-meta">汇总活动告警、证书预警、备份失败、近 72 小时 Runbook 异常与 14 天内到期 VPS</span>
+          </div>
+        </div>
+        <div className="heading-actions">
+          <span className={totalTodos > 0 ? "badge badge-bad" : "badge badge-ok"}>{totalTodos > 0 ? `${totalTodos} 项待处理` : "全部健康"}</span>
+          <button className="icon-btn" type="button" title="刷新待办" aria-label="刷新待办" disabled={refreshingTodos} onClick={() => void loadActionCenter()}>
+            <RefreshCw size={15} className={refreshingTodos ? "spin" : undefined} />
+          </button>
+        </div>
+      </div>
+      <div className="panel-body">
+        {totalTodos === 0 ? (
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-muted text-sm">没有活动告警、证书预警、失败备份或临期服务器。</p>
+            {servers.length > 0 && actionCenter.enabledNotificationChannels === 0 && (
+              <button className="btn" type="button" onClick={onSettings}><BellRing size={14} />配置手机告警渠道</button>
+            )}
+          </div>
+        ) : (
+          <div className="stack">
+            {actionCenter.activeHostAlerts.slice(0, 5).map((alert) => (
+              <div className="list-row" key={`host-${alert.id}`}>
+                <div>
+                  <span className="badge badge-bad mr-2">主机告警</span>
+                  <strong>{alert.serverName}</strong>
+                  <span className="table-meta">{alert.message} · {formatTime(alert.createdAt)}</span>
+                </div>
+                <button className="btn" type="button" onClick={onMonitoring}>查看监控</button>
+              </div>
+            ))}
+            {actionCenter.activeServiceEvents.slice(0, 5).map((event) => (
+              <div className="list-row" key={`svc-${event.id}`}>
+                <div>
+                  <span className="badge badge-bad mr-2">服务异常</span>
+                  <strong>{event.monitorName}</strong>
+                  <span className="table-meta">{event.message} · {formatTime(event.createdAt)}</span>
+                </div>
+                <button className="btn" type="button" onClick={onMonitoring}>查看探测</button>
+              </div>
+            ))}
+            {actionCenter.expiringCertificates.slice(0, 5).map((cert) => (
+              <div className="list-row" key={`cert-${cert.monitorId}`}>
+                <div>
+                  <span className={cert.daysRemaining <= 7 ? "badge badge-bad mr-2" : "badge mr-2"}>证书预警</span>
+                  <strong>{cert.monitorName}</strong>
+                  <span className="table-meta">{cert.target} · {cert.daysRemaining < 0 ? `已过期 ${Math.abs(cert.daysRemaining)} 天` : `剩余 ${cert.daysRemaining} 天`}</span>
+                </div>
+                <button className="btn" type="button" onClick={onMonitoring}>查看证书</button>
+              </div>
+            ))}
+            {actionCenter.failedBackups.slice(0, 5).map((item) => (
+              <div className="list-row" key={`bak-${item.policyId}`}>
+                <div>
+                  <span className="badge badge-bad mr-2"><FolderArchive size={12} /> 备份失败</span>
+                  <strong>{item.serverName} · {item.policyName}</strong>
+                  <span className="table-meta">{item.error} · {formatTime(item.failedAt)}</span>
+                </div>
+                <button className="btn" type="button" onClick={onServers}>前往处理</button>
+              </div>
+            ))}
+            {actionCenter.failedRunbooks.slice(0, 5).map((run) => (
+              <div className="list-row" key={`rb-${run.executionId}`}>
+                <div>
+                  <span className="badge badge-bad mr-2"><ShieldAlert size={12} /> Runbook 异常</span>
+                  <strong>{run.runbookName}</strong>
+                  <span className="table-meta">{run.error || `${run.failureCount} 台目标失败`} · {formatTime(run.createdAt)}</span>
+                </div>
+                <button className="btn" type="button" onClick={onAutomation}>查看历史</button>
+              </div>
+            ))}
+            {urgentExpiring.slice(0, 5).map((item) => (
+              <div className="list-row" key={`exp-${item.serverId}`}>
+                <div>
+                  <span className={item.daysRemaining <= 7 ? "badge badge-bad mr-2" : "badge mr-2"}>续费提醒</span>
+                  <strong>{item.serverName}</strong>
+                  <span className="table-meta">{item.provider || "未填写服务商"} · {item.daysRemaining < 0 ? `已过期 ${Math.abs(item.daysRemaining)} 天` : item.daysRemaining === 0 ? "今天到期" : `${item.daysRemaining} 天后到期`}（{item.expiresAt}）</span>
+                </div>
+                <button className="btn" type="button" onClick={onServers}>管理资产</button>
+              </div>
+            ))}
+            {actionCenter.enabledNotificationChannels === 0 && (
+              <div className="list-row">
+                <span className="table-meta">尚未启用 Telegram/飞书/钉钉/ntfy 等外部通知渠道，退出或离开电脑时无法收到手机推送。</span>
+                <button className="btn" type="button" onClick={onSettings}><BellRing size={14} />配置通知中心</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>}
+
     {servers.length > 0 && <section className="panel cost-panel">
       <div className="panel-header"><h2>成本与到期</h2><span className="text-muted text-sm">依据服务器资料中的月成本与到期日</span></div>
       <div className="cost-body">

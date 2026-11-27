@@ -8,9 +8,10 @@ use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     DataProtectionAction, DataProtectionInput, DataProtectionOverview, DataProtectionPolicy,
-    DataProtectionRestoreResult, DataProtectionRun, DataProtectionRunStatus, ProtectionSourceKind,
-    ResticRepositoryKind, ResticSnapshot,
+    DataProtectionRestoreResult, DataProtectionRun, DataProtectionRunStatus, NotificationEventKind,
+    NotificationSeverity, ProtectionSourceKind, ResticRepositoryKind, ResticSnapshot,
 };
+use crate::notifications::{self, NotificationDispatchEvent};
 use crate::runbook;
 use crate::ssh::{self, SshConnection};
 use crate::utils::{self, shell_quote};
@@ -289,6 +290,30 @@ fn execute_record(
                 Some(&message),
                 started.elapsed().as_millis() as u64,
             )?;
+            if matches!(
+                action,
+                DataProtectionAction::Backup | DataProtectionAction::Check
+            ) {
+                let server_name = db
+                    .get_server(&policy.server_id)
+                    .map(|server| server.name)
+                    .unwrap_or_else(|_| policy.server_id.clone());
+                let action_label = match action {
+                    DataProtectionAction::Backup => "备份失败",
+                    DataProtectionAction::Check => "仓库校验失败",
+                    _ => "执行失败",
+                };
+                notifications::dispatch_async(
+                    db.clone(),
+                    NotificationDispatchEvent {
+                        kind: NotificationEventKind::BackupFailure,
+                        severity: NotificationSeverity::Critical,
+                        title: format!("{} · Restic {}", policy.name, action_label),
+                        message: message.clone(),
+                        target: Some(server_name),
+                    },
+                );
+            }
             return Err(AppError::Message(message));
         }
     }
