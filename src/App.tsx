@@ -3,7 +3,7 @@ import { Activity, Bot, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockK
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
 import { useHostTrust } from "./hooks/useHostTrust";
-import type { AlertEvent, MonitoringSettings, Server, ServerMetrics } from "./types";
+import type { AlertEvent, MonitoringSettings, Server, ServerInput, ServerMetrics } from "./types";
 import { useMonitoring } from "./hooks/useMonitoring";
 import { useServiceMonitoring } from "./hooks/useServiceMonitoring";
 import { sendSystemNotification } from "./lib/notifications";
@@ -68,6 +68,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Server | null>(null);
+  const [formPreset, setFormPreset] = useState<Partial<ServerInput> | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPreset, setAiPreset] = useState<AiPromptPreset>();
   const { execute, trustDialog } = useHostTrust();
@@ -143,8 +144,9 @@ export default function App() {
     setPage(target);
     setMenuOpen(false);
   };
-  const add = () => { setEditing(null); setFormOpen(true); };
-  const edit = (server: Server) => { setEditing(server); setFormOpen(true); };
+  const add = () => { setEditing(null); setFormPreset(null); setFormOpen(true); };
+  const addWithPreset = (preset: Partial<ServerInput>) => { setEditing(null); setFormPreset(preset); setFormOpen(true); };
+  const edit = (server: Server) => { setEditing(server); setFormPreset(null); setFormOpen(true); };
   const openTerminal = (server: Server) => {
     setTerminalRequest((current) => ({ id: (current?.id ?? 0) + 1, serverId: server.id }));
     navigate("terminal");
@@ -171,7 +173,7 @@ export default function App() {
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} onMonitoring={() => navigate("monitoring")} onAutomation={() => { setAutomationMode("operations"); navigate("automation"); }} onSettings={() => navigate("settings")} onDiagnose={askAi} />}
         <Suspense fallback={<div className="skeleton" />}>
-          {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
+          {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} onOpenRunbooks={() => { setAutomationMode("runbooks"); navigate("automation"); }} trusted={execute} />}
           {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}
           {page === "security" && <SecurityCenter servers={servers} trusted={execute} onAdd={add} onOpenRunbooks={() => { setAutomationMode("runbooks"); navigate("automation"); }} />}
           {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} requestedMode={automationMode} />}
@@ -180,14 +182,14 @@ export default function App() {
           {page === "recordings" && <RecordingsPage />}
           {page === "assets" && <AssetsPage servers={servers} onChanged={loadServers} />}
           {page === "discover" && <DiscoveryPage />}
-          {page === "free" && <FreePage />}
+          {page === "free" && <FreePage onRegister={addWithPreset} />}
           {page === "activity" && <ActivityPage />}
           {page === "mcp" && <McpPage onOpenAssistant={() => setAiOpen(true)} />}
           {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} appUpdate={appUpdate} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
         </Suspense>
       </div>
     </main>
-    <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />
+    <ServerForm server={editing} preset={formPreset} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />
     {aiOpen && (
       <Suspense fallback={null}>
         <AiAssistantDialog open={aiOpen} servers={servers} preset={aiPreset} onClose={() => setAiOpen(false)} onOpenSettings={() => navigate("mcp")} />

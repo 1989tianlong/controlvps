@@ -21,13 +21,14 @@ const emptyForm: ServerInput = {
 
 interface Props {
   server: Server | null;
+  preset?: Partial<ServerInput> | null;
   servers: Server[];
   open: boolean;
   onClose: () => void;
   onSaved: (server: Server) => void;
 }
 
-export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
+export function ServerForm({ server, preset, servers, open, onClose, onSaved }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<ServerInput>(emptyForm);
   const [groups, setGroups] = useState<ServerGroup[]>([]);
@@ -67,7 +68,7 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
       inheritUsername: server.inheritUsername,
       inheritJump: server.inheritJump,
       inheritAuth: server.inheritAuth,
-    } : emptyForm);
+    } : { ...emptyForm, ...(preset ?? {}) });
     void Promise.all([api.serverGroups(), api.authProfiles()])
       .then(([nextGroups, nextProfiles]) => {
         setGroups(nextGroups);
@@ -75,7 +76,7 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
       })
       .catch((reason) => setError(errorMessage(reason)));
     dialogRef.current?.showModal();
-  }, [open, server]);
+  }, [open, server, preset]);
 
   const update = <K extends keyof ServerInput>(key: K, value: ServerInput[K]) => {
     setForm((current) => ({ ...current, [key]: value }));

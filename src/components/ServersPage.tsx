@@ -15,10 +15,11 @@ interface Props {
   onEdit: (server: Server) => void;
   onChanged: () => Promise<void>;
   onOpenTerminal: (server: Server) => void;
+  onOpenRunbooks?: () => void;
   trusted: TrustedExecutor;
 }
 
-export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdit, onChanged, onOpenTerminal, trusted }: Props) {
+export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdit, onChanged, onOpenTerminal, onOpenRunbooks, trusted }: Props) {
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -131,6 +132,6 @@ export function ServersPage({ servers, loading, metrics, onMetrics, onAdd, onEdi
         })}
       </tbody></table>
     </div>}
-    {selected && <ServerDetail server={selected} jumpServers={jumpServersOf(selected, servers)} diagnostics={diagnostics[selected.id]} onDiagnose={() => void test(selected)} metrics={metrics[selected.id]} metricsError={errors[selected.id]} tab={tab} onTabChange={setTab} onRefresh={() => refresh(selected)} refreshing={busy === selected.id} trusted={trusted} />}
+    {selected && <ServerDetail server={selected} jumpServers={jumpServersOf(selected, servers)} diagnostics={diagnostics[selected.id]} onDiagnose={() => void test(selected)} metrics={metrics[selected.id]} metricsError={errors[selected.id]} tab={tab} onTabChange={setTab} onRefresh={() => refresh(selected)} refreshing={busy === selected.id} trusted={trusted} onOpenRunbooks={onOpenRunbooks} />}
   </>;
 }

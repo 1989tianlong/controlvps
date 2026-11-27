@@ -3,6 +3,7 @@ mod alerts;
 mod assets;
 mod backup;
 mod batch;
+mod benchmark;
 mod commands;
 mod compose;
 mod data_protection;
@@ -232,6 +233,9 @@ pub fn run() {
             commands::test_ai_connection,
             commands::ai_chat,
             commands::execute_ai_proposal,
+            commands::run_server_benchmark,
+            commands::list_server_benchmarks,
+            commands::fetch_free_catalog,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ControlVPS")

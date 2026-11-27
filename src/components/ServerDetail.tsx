@@ -8,8 +8,9 @@ import { FileManager } from "./FileManager";
 import { DockerManager } from "./DockerManager";
 import { SystemdManager } from "./SystemdManager";
 import { DataProtectionManager } from "./DataProtectionManager";
+import { ServerBenchmarkPanel } from "./ServerBenchmarkPanel";
 
-export type DetailTab = "overview" | "diagnostics" | "files" | "docker" | "services" | "protection" | "actions";
+export type DetailTab = "overview" | "diagnostics" | "provision" | "files" | "docker" | "services" | "protection" | "actions";
 
 interface Props {
   server: Server;
@@ -23,9 +24,10 @@ interface Props {
   onRefresh: () => void;
   refreshing: boolean;
   trusted: TrustedExecutor;
+  onOpenRunbooks?: () => void;
 }
 
-export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, metrics, metricsError, tab, onTabChange, onRefresh, refreshing, trusted }: Props) {
+export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, metrics, metricsError, tab, onTabChange, onRefresh, refreshing, trusted, onOpenRunbooks }: Props) {
   return (
     <section className="panel server-detail" aria-label={`${server.name} 详情`}>
       <div className="panel-header">
@@ -35,6 +37,7 @@ export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, met
       <div className="tabs" role="tablist" aria-label="服务器工作区">
         <button className="tab" type="button" role="tab" aria-selected={tab === "overview"} onClick={() => onTabChange("overview")}>概览</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "diagnostics"} onClick={() => onTabChange("diagnostics")}>连接诊断</button>
+        <button className="tab" type="button" role="tab" aria-selected={tab === "provision"} onClick={() => onTabChange("provision")}>验机与初始化</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "files"} onClick={() => onTabChange("files")}>文件管理</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "docker"} onClick={() => onTabChange("docker")}>Docker</button>
         <button className="tab" type="button" role="tab" aria-selected={tab === "services"} onClick={() => onTabChange("services")}>服务管理</button>
@@ -43,6 +46,7 @@ export function ServerDetail({ server, jumpServers, diagnostics, onDiagnose, met
       </div>
       {tab === "overview" && <OverviewTab server={server} metrics={metrics} error={metricsError} onRefresh={onRefresh} refreshing={refreshing} />}
       {tab === "diagnostics" && <ConnectionDiagnostics report={diagnostics} error={metricsError} busy={refreshing} onRun={onDiagnose} />}
+      {tab === "provision" && <ServerBenchmarkPanel server={server} trusted={trusted} onOpenRunbooks={onOpenRunbooks} />}
       {tab === "files" && <FileManager server={server} trusted={trusted} />}
       {tab === "docker" && <DockerManager server={server} trusted={trusted} />}
       {tab === "services" && <SystemdManager server={server} trusted={trusted} />}

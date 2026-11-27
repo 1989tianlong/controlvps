@@ -9,9 +9,58 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
+use crate::models::{FreeProgramItem, RemoteFreeCatalogResult};
 
 const DEAL_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_FEED_BYTES: u64 = 4 * 1024 * 1024;
+const REMOTE_FREE_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/1989tianlong/controlvps/main/catalog/free-programs.json";
+const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
+
+pub fn fetch_free_catalog() -> AppResult<RemoteFreeCatalogResult> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(8))
+        .user_agent(concat!("ControlVPS/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| AppError::Message(format!("无法初始化目录请求客户端：{error}")))?;
+    let response = client
+        .get(REMOTE_FREE_CATALOG_URL)
+        .send()
+        .map_err(|error| AppError::Message(format!("无法拉取远端免费目录：{error}")))?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(format!(
+            "远端目录暂不可用（HTTP {}），已继续使用内置目录",
+            response.status()
+        )));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_CATALOG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::Message(format!("读取远端目录失败：{error}")))?;
+    if bytes.len() as u64 > MAX_CATALOG_BYTES {
+        return Err(AppError::Message("远端目录文件超过 1 MiB 限制".into()));
+    }
+    let programs: Vec<FreeProgramItem> = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::Message(format!("解析远端目录 JSON 失败：{error}")))?;
+    let valid: Vec<FreeProgramItem> = programs
+        .into_iter()
+        .filter(|item| {
+            reqwest::Url::parse(&item.source_url)
+                .ok()
+                .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+        })
+        .collect();
+    if valid.is_empty() {
+        return Err(AppError::Message("远端目录未包含有效条目".into()));
+    }
+    Ok(RemoteFreeCatalogResult {
+        fetched_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        source_url: REMOTE_FREE_CATALOG_URL.to_string(),
+        programs: valid,
+    })
+}
 
 fn deal_cache() -> &'static Mutex<Option<(Instant, DealFeed)>> {
     static CACHE: OnceLock<Mutex<Option<(Instant, DealFeed)>>> = OnceLock::new();

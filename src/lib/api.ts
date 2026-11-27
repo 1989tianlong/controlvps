@@ -63,6 +63,7 @@ import type {
   PortForwardInput,
   PortForwardRule,
   QuickAction,
+  RemoteFreeCatalogResult,
   Runbook,
   RunbookExecution,
   RunbookInput,
@@ -71,6 +72,7 @@ import type {
   RunbookScheduleInput,
   SecurityReport,
   Server,
+  ServerBenchmark,
   ServerGroup,
   ServerGroupInput,
   ServerInput,
@@ -116,7 +118,7 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls", "list_notification_channels", "list_notification_deliveries", "list_pending_mcp_approvals"].includes(command)) return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls", "list_notification_channels", "list_notification_deliveries", "list_pending_mcp_approvals", "list_server_benchmarks"].includes(command)) return [] as T;
     if (command === "get_ai_settings") {
       return {
         enabled: false,
@@ -171,7 +173,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.12.0",
+        version: "1.13.0",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
         credentialStore: "系统钥匙串",
@@ -391,6 +393,11 @@ export const api = {
   aiChat: (request: AiChatRequest) => call<AiChatResponse>("ai_chat", { request }),
   executeAiProposal: (proposal: AiActionProposal) =>
     call<AiProposalExecutionResult>("execute_ai_proposal", { proposal }),
+  runServerBenchmark: (id: string, allowUnknownHost = false) =>
+    call<ServerBenchmark>("run_server_benchmark", { id, allowUnknownHost }),
+  listServerBenchmarks: (serverId?: string) =>
+    call<ServerBenchmark[]>("list_server_benchmarks", { serverId }),
+  fetchFreeCatalog: () => call<RemoteFreeCatalogResult>("fetch_free_catalog"),
 };
 
 export async function openExternal(url: string) {

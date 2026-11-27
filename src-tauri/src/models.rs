@@ -1729,3 +1729,71 @@ pub struct AiProposalExecutionResult {
     pub output: String,
     pub created_runbook_id: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkEndpointCheck {
+    pub name: String,
+    pub reachable: bool,
+    pub status_code: Option<u16>,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerBenchmark {
+    pub id: String,
+    pub server_id: String,
+    pub server_name: String,
+    pub cpu_model: String,
+    pub cpu_cores: u32,
+    pub arch: String,
+    pub kernel: String,
+    pub os: String,
+    pub virtualization: String,
+    pub memory_mb: u64,
+    pub disk_gb: u64,
+    pub aes_ni: bool,
+    pub cpu_mb_per_sec: f64,
+    pub disk_write_mb_per_sec: f64,
+    pub local_rtt_ms: Option<u64>,
+    pub public_ipv4: Option<String>,
+    pub has_ipv6: bool,
+    pub asn: Option<String>,
+    pub location: Option<String>,
+    pub endpoints: Vec<BenchmarkEndpointCheck>,
+    pub score: u32,
+    pub duration_ms: u64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreeProgramItem {
+    pub id: String,
+    pub provider: String,
+    pub title: String,
+    pub kind: String,
+    pub summary: String,
+    pub resources: Vec<String>,
+    pub regions: Vec<String>,
+    pub requires_card: Option<bool>,
+    pub validity: String,
+    pub billing_risk: String,
+    pub source_url: String,
+    pub last_verified: String,
+    pub status: String,
+    pub conditions: Vec<String>,
+    #[serde(default)]
+    pub keep_alive_rule: Option<String>,
+    #[serde(default)]
+    pub claim_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFreeCatalogResult {
+    pub fetched_at: String,
+    pub source_url: String,
+    pub programs: Vec<FreeProgramItem>,
+}

@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::ai_assistant;
 use crate::alerts::{self, AlertRegistry};
 use crate::batch;
+use crate::benchmark;
 use crate::compose;
 use crate::db::Database;
 use crate::discovery::{self, DealFeed};
@@ -27,9 +28,10 @@ use crate::models::{
     DockerOverview, FileListing, FileTransfer, FileTransferKind, FileTransferTask,
     McpApprovalRequest, McpCallRecord, McpSettingsInput, MetricSample, MonitoringSettings,
     NotificationChannel, NotificationChannelInput, NotificationDelivery, OperationLog,
-    PortForwardInput, PortForwardRule, QuickAction, Runbook, RunbookExecution,
-    RunbookExecutionRequest, RunbookInput, RunbookResult, RunbookSchedule, RunbookScheduleInput,
-    RunbookTrigger, SecurityReport, Server, ServerGroup, ServerGroupInput, ServerInput,
+    PortForwardInput, PortForwardRule, QuickAction, RemoteFreeCatalogResult, Runbook,
+    RunbookExecution, RunbookExecutionRequest, RunbookInput, RunbookResult, RunbookSchedule,
+    RunbookScheduleInput, RunbookTrigger, SecurityReport, Server, ServerBenchmark, ServerGroup,
+    ServerGroupInput, ServerInput,
     ServerMetrics, ServiceCheckResult, ServiceEvent, ServiceMonitorInput, ServiceMonitorView,
     ServiceNotificationInput, ServiceNotificationSettings, ServiceSample, Snippet, SnippetInput,
     SshConfigImport, SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview,
@@ -2107,6 +2109,32 @@ pub async fn execute_ai_proposal(
     let database = db.inner().clone();
     let known_hosts = paths.known_hosts.clone();
     run_blocking(move || ai_assistant::execute_proposal(&database, &known_hosts, &proposal)).await
+}
+
+#[tauri::command]
+pub async fn run_server_benchmark(
+    db: State<'_, Database>,
+    paths: State<'_, AppPaths>,
+    id: String,
+    allow_unknown_host: bool,
+) -> CommandResult<ServerBenchmark> {
+    let database = db.inner().clone();
+    let known_hosts = paths.known_hosts.clone();
+    run_blocking(move || benchmark::run(&database, &id, &known_hosts, allow_unknown_host)).await
+}
+
+#[tauri::command]
+pub fn list_server_benchmarks(
+    db: State<'_, Database>,
+    server_id: Option<String>,
+) -> CommandResult<Vec<ServerBenchmark>> {
+    db.list_server_benchmarks(server_id.as_deref())
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn fetch_free_catalog() -> CommandResult<RemoteFreeCatalogResult> {
+    run_blocking(discovery::fetch_free_catalog).await
 }
 
 fn connection_job(db: &Database, id: &str) -> CommandResult<ssh::ConnectionJob> {

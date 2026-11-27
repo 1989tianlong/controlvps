@@ -18,15 +18,15 @@ use crate::models::{
     NotificationEventKind, NotificationSeverity, OperationLog, PortForwardInput, PortForwardRule,
     ProtectionSourceKind, ResticRepositoryKind, Runbook, RunbookExecution,
     RunbookExecutionRequest, RunbookExecutionStatus, RunbookInput, RunbookResult, RunbookSchedule,
-    RunbookScheduleInput, RunbookStep, RunbookTrigger, Server, ServerGroup, ServerGroupInput,
-    ServerInput, ServerMetrics, ServiceEvent, ServiceEventKind, ServiceMonitor,
+    RunbookScheduleInput, RunbookStep, RunbookTrigger, Server, ServerBenchmark, ServerGroup,
+    ServerGroupInput, ServerInput, ServerMetrics, ServiceEvent, ServiceEventKind, ServiceMonitor,
     ServiceMonitorInput, ServiceMonitorKind, ServiceMonitorView, ServiceProbe, ServiceSample,
     Snippet, SnippetInput, WorkspaceBackup,
 };
 #[cfg(not(test))]
 use crate::utils;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 #[cfg(not(test))]
 const MCP_TOKEN_ACCOUNT: &str = "mcp:bearer-token";
 const PRUNE_EVERY_N_WRITES: u64 = 50;
@@ -354,6 +354,16 @@ impl Database {
              );
              CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created
              ON notification_deliveries(id DESC);
+             CREATE TABLE IF NOT EXISTS server_benchmarks (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_server_benchmarks_server
+             ON server_benchmarks(server_id, created_at DESC);
              CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -2366,6 +2376,10 @@ impl Database {
                 "DELETE FROM notification_deliveries WHERE id NOT IN (SELECT id FROM notification_deliveries ORDER BY id DESC LIMIT 500)",
                 [],
             );
+            let _ = connection.execute(
+                "DELETE FROM server_benchmarks WHERE id NOT IN (SELECT id FROM server_benchmarks ORDER BY created_at DESC LIMIT 300)",
+                [],
+            );
         }
         Ok(())
     }
@@ -2515,6 +2529,60 @@ impl Database {
         let value = serde_json::to_string(settings)
             .map_err(|error| AppError::Message(error.to_string()))?;
         self.set_app_setting("ai", &value)
+    }
+
+    pub fn save_server_benchmark(&self, benchmark: &ServerBenchmark) -> AppResult<()> {
+        let payload = serde_json::to_string(benchmark)
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        self.connection()?.execute(
+            "INSERT INTO server_benchmarks (id, server_id, payload, score, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                benchmark.id,
+                benchmark.server_id,
+                payload,
+                benchmark.score,
+                benchmark.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_server_benchmarks(
+        &self,
+        server_id: Option<&str>,
+    ) -> AppResult<Vec<ServerBenchmark>> {
+        let connection = self.connection()?;
+        let mut items = Vec::new();
+        if let Some(id) = server_id {
+            let mut stmt = connection.prepare(
+                "SELECT payload FROM server_benchmarks WHERE server_id = ?1
+                 ORDER BY created_at DESC LIMIT 20",
+            )?;
+            let rows = stmt.query_map([id], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                if let Ok(parsed) = serde_json::from_str::<ServerBenchmark>(&row?) {
+                    items.push(parsed);
+                }
+            }
+        } else {
+            let mut stmt = connection.prepare(
+                "SELECT payload FROM server_benchmarks
+                 WHERE id IN (
+                    SELECT id FROM server_benchmarks b2
+                    WHERE b2.server_id = server_benchmarks.server_id
+                    ORDER BY created_at DESC LIMIT 1
+                 )
+                 ORDER BY score DESC, created_at DESC LIMIT 100",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                if let Ok(parsed) = serde_json::from_str::<ServerBenchmark>(&row?) {
+                    items.push(parsed);
+                }
+            }
+        }
+        Ok(items)
     }
 
     pub fn rotate_mcp_token(&self) -> AppResult<McpSettings> {
@@ -4340,5 +4408,19 @@ mod tests {
         assert_eq!(summary.failed_backups.len(), 1);
         assert_eq!(summary.enabled_notification_channels, 1);
         assert_eq!(summary.scheduled_backup_policies, 1);
+
+        let bench = crate::benchmark::parse_benchmark_output(
+            &server.id,
+            &server.name,
+            Some(40),
+            1200,
+            "__CPU_MODEL__=TestCPU\n__CPU_CORES__=2\n__CPU_MS__=200\n__DISK_MS__=200\n",
+        );
+        let mut bench = bench;
+        bench.id = "b-1".into();
+        bench.created_at = Utc::now().to_rfc3339();
+        db.save_server_benchmark(&bench).unwrap();
+        assert_eq!(db.list_server_benchmarks(Some(&server.id)).unwrap().len(), 1);
+        assert_eq!(db.list_server_benchmarks(None).unwrap().len(), 1);
     }
 }

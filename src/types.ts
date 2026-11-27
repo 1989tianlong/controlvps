@@ -1014,6 +1014,47 @@ export interface FreeProgram {
   lastVerified: string;
   status: "verified" | "unverified";
   conditions: string[];
+  keepAliveRule?: string;
+  claimSteps?: string[];
+}
+
+export interface RemoteFreeCatalogResult {
+  fetchedAt: string;
+  sourceUrl: string;
+  programs: FreeProgram[];
+}
+
+export interface BenchmarkEndpointCheck {
+  name: string;
+  reachable: boolean;
+  statusCode?: number;
+  latencyMs: number;
+}
+
+export interface ServerBenchmark {
+  id: string;
+  serverId: string;
+  serverName: string;
+  cpuModel: string;
+  cpuCores: number;
+  arch: string;
+  kernel: string;
+  os: string;
+  virtualization: string;
+  memoryMb: number;
+  diskGb: number;
+  aesNi: boolean;
+  cpuMbPerSec: number;
+  diskWriteMbPerSec: number;
+  localRttMs?: number;
+  publicIpv4?: string;
+  hasIpv6: boolean;
+  asn?: string;
+  location?: string;
+  endpoints: BenchmarkEndpointCheck[];
+  score: number;
+  durationMs: number;
+  createdAt: string;
 }
 
 export interface RecordingHandle {
