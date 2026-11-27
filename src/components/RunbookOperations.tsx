@@ -36,15 +36,17 @@ export function RunbookOperations({ servers, trusted, onAdd }: { servers: Server
     } catch (reason) { if (!quiet) setError(errorMessage(reason)); }
     finally { setLoading(false); }
   }, []);
+  const hasActiveExecution = executions.some(active);
+  const activeDetailId = detail && active(detail) ? detail.id : undefined;
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    if (!executions.some(active) && !detail?.status.match(/queued|running/)) return;
+    if (!hasActiveExecution && !activeDetailId) return;
     const timer = window.setInterval(() => {
       void load(true);
-      if (detail && active(detail)) void api.runbookExecution(detail.id).then(setDetail).catch(() => undefined);
+      if (activeDetailId) void api.runbookExecution(activeDetailId).then(setDetail).catch(() => undefined);
     }, 1200);
     return () => window.clearInterval(timer);
-  }, [executions, detail, load]);
+  }, [hasActiveExecution, activeDetailId, load]);
   useEffect(() => {
     if (editorOpen && !editorRef.current?.open) editorRef.current?.showModal();
     if (!editorOpen && editorRef.current?.open) editorRef.current.close();

@@ -26,15 +26,18 @@ export function useAppUpdate() {
   const [dismissed, setDismissed] = useState(false);
   const pending = useRef<Update | null>(null);
   const busy = useRef(false);
+  const installing = useRef(false);
 
   const checkForUpdate = useCallback(async (interactive = false) => {
-    if (!inDesktop() || busy.current) return;
+    if (!inDesktop() || busy.current || installing.current) return;
     busy.current = true;
     setDismissed(false);
     setState({ status: "checking" });
     try {
       const update = await check({ timeout: 20_000 });
+      const previous = pending.current;
       pending.current = update;
+      if (previous && previous !== update) void previous.close().catch(() => undefined);
       if (!update) {
         setState(interactive ? { status: "current" } : { status: "idle" });
       } else {
@@ -49,7 +52,8 @@ export function useAppUpdate() {
 
   const install = useCallback(async () => {
     const update = pending.current;
-    if (!update) return;
+    if (!update || installing.current) return;
+    installing.current = true;
     setDismissed(false);
     setState({ status: "downloading", version: update.version, percent: null });
     try {
@@ -73,7 +77,17 @@ export function useAppUpdate() {
       setState({ status: "ready", version: update.version });
     } catch (reason) {
       setState({ status: "error", message: reasonText(reason) });
+    } finally {
+      installing.current = false;
     }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const current = pending.current;
+      pending.current = null;
+      if (current) void current.close().catch(() => undefined);
+    };
   }, []);
 
   const restart = useCallback(async () => {

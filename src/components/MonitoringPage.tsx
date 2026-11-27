@@ -61,9 +61,16 @@ function ResourceMonitoring({ servers, metrics, errors, settings, trusted, onMet
 
   useEffect(() => {
     void loadAlerts();
+    let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<AlertEvent>("monitoring-alert", () => { void loadAlerts(); }).then((dispose) => { unlisten = dispose; });
-    return () => unlisten?.();
+    void listen<AlertEvent>("monitoring-alert", () => { void loadAlerts(); }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [loadAlerts]);
 
   useEffect(() => {

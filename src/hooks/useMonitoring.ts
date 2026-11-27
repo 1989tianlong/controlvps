@@ -11,21 +11,26 @@ export function useMonitoring(
   const [collecting, setCollecting] = useState(false);
   const metricsCallback = useRef(onMetrics);
   metricsCallback.current = onMetrics;
+  const serversRef = useRef(servers);
+  serversRef.current = servers;
+  const serverIdsKey = servers.map((server) => server.id).join(",");
 
   useEffect(() => {
-    setErrors((current) => Object.fromEntries(Object.entries(current).filter(([id]) => servers.some((server) => server.id === id))));
-  }, [servers]);
+    const validIds = new Set(serverIdsKey ? serverIdsKey.split(",") : []);
+    setErrors((current) => Object.fromEntries(Object.entries(current).filter(([id]) => validIds.has(id))));
+  }, [serverIdsKey]);
 
   useEffect(() => {
-    if (!settings?.autoCollect || servers.length === 0) return;
+    if (!settings?.autoCollect || !serverIdsKey) return;
     let stopped = false;
     let running = false;
     const collect = async () => {
       if (running) return;
       running = true;
       if (!stopped) setCollecting(true);
-      for (let offset = 0; offset < servers.length; offset += 2) {
-        await Promise.all(servers.slice(offset, offset + 2).map(async (server) => {
+      const targets = serversRef.current;
+      for (let offset = 0; offset < targets.length; offset += 2) {
+        await Promise.all(targets.slice(offset, offset + 2).map(async (server) => {
           try {
             const result = await api.collectMetrics(server.id);
             if (!stopped) {
@@ -48,7 +53,7 @@ export function useMonitoring(
       setCollecting(false);
       window.clearInterval(timer);
     };
-  }, [servers, settings?.autoCollect, settings?.intervalSeconds]);
+  }, [serverIdsKey, settings?.autoCollect, settings?.intervalSeconds]);
 
   return { errors, collecting };
 }

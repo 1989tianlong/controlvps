@@ -28,11 +28,11 @@ export function TransferQueue({ serverId, revision, onCompleted }: Props) {
   const load = useCallback(async () => {
     try {
       const next = (await api.listFileTransfers()).filter((task) => task.serverId === serverId);
-      const completed = next.some((task) => task.status === "completed" && previousActive.current.has(task.id));
+      const uploadCompleted = next.some((task) => task.kind === "upload" && task.status === "completed" && previousActive.current.has(task.id));
       previousActive.current = new Set(next.filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id));
       setTasks(next);
       setError("");
-      if (completed) completedCallback.current();
+      if (uploadCompleted) completedCallback.current();
     } catch (reason) {
       setError(errorMessage(reason));
     }

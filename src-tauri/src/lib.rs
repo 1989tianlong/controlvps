@@ -24,6 +24,7 @@ mod systemd;
 mod terminal;
 mod transfers;
 mod tunnel;
+mod utils;
 
 use alerts::AlertRegistry;
 use commands::AppPaths;
@@ -56,6 +57,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let database = Database::new(&data_dir.join("controlvps.sqlite3"))?;
+            let _ = database.recover_interrupted_data_protection_runs();
             let paths = AppPaths {
                 known_hosts: data_dir.join("known_hosts"),
                 data_dir,
@@ -207,6 +209,22 @@ pub fn run() {
             commands::retry_file_transfer,
             commands::clear_finished_file_transfers,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ControlVPS");
+        .build(tauri::generate_context!())
+        .expect("error while building ControlVPS")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(scheduler) = app.try_state::<RunbookScheduler>() {
+                    scheduler.stop();
+                }
+                if let Some(mcp_server) = app.try_state::<mcp::McpServer>() {
+                    mcp_server.shutdown();
+                }
+                if let Some(tunnels) = app.try_state::<TunnelRegistry>() {
+                    tunnels.stop_all();
+                }
+                if let Some(terminals) = app.try_state::<TerminalRegistry>() {
+                    terminals.close_all();
+                }
+            }
+        });
 }

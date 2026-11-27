@@ -79,7 +79,7 @@ export function RecordingsPage() {
 
   return <>
     <div className="page-heading"><div><h1>录制回放</h1><p>终端会话可录制为 asciicast v2 文件，保存在本机，用于复盘操作和排查事故。</p></div><button className="btn" type="button" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "spin" : undefined} />刷新</button></div>
-    <div className="risk flex items-start gap-3"><ShieldAlert size={20} className="shrink-0" /><p>录制包含终端输出与键盘输入，可能含密码、令牌等敏感内容；文件以明文保存在本机应用数据目录，不会随加密备份导出，可随时在这里删除。</p></div>
+    <div className="risk flex items-start gap-3"><ShieldAlert size={20} className="shrink-0" /><p>录制仅保存终端输出（新录制不再写入原始键盘输入，但屏幕上回显的命令与输出仍可能含令牌等敏感内容）；文件以 0600 权限保存在本机应用数据目录，不会随加密备份导出，可随时在这里删除。</p></div>
     {error && <div className="error-banner" role="alert"><p>{error}</p></div>}
     {playing ? <PlaybackPlayer detail={playing} onClose={() => setPlaying(null)} /> : loading ? <div className="skeleton recording-skeleton" /> : items.length === 0 ? <div className="empty"><div><Clapperboard size={32} /><h2>还没有录制</h2><p>在「终端工作区」打开会话后，点顶部的录制按钮开始录制，停止后就会出现在这里。</p></div></div> : <div className="table-wrap panel"><table className="data-table recording-table"><thead><tr><th>服务器</th><th>开始时间</th><th>时长</th><th>大小</th><th>帧数</th><th>操作</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}>
       <td><span className="table-name">{item.serverName}</span><span className="table-meta">{item.width}×{item.height}</span></td>
@@ -135,12 +135,18 @@ function PlaybackPlayer({ detail, onClose }: { detail: RecordingDetail; onClose:
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
-    terminal.resize(detail.summary.width, detail.summary.height);
-    fit.fit();
+    const hasRecordedDims = detail.summary.width > 0 && detail.summary.height > 0 && detail.summary.width <= 500;
+    if (hasRecordedDims) {
+      terminal.resize(detail.summary.width, detail.summary.height);
+    } else {
+      fit.fit();
+    }
     terminalRef.current = terminal;
     indexRef.current = 0;
     clockRef.current = 0;
-    const observer = new ResizeObserver(() => fit.fit());
+    const observer = new ResizeObserver(() => {
+      if (!hasRecordedDims) fit.fit();
+    });
     observer.observe(host);
     return () => {
       observer.disconnect();
@@ -212,7 +218,7 @@ function PlaybackPlayer({ detail, onClose }: { detail: RecordingDetail; onClose:
     <div className="playback-foot">
       <progress className="playback-progress" max={1} value={progress} aria-label="回放进度" />
       <span className="measured">{Math.round(progress * 100)}%</span>
-      <span className="text-muted">回放只显示输出，键盘输入保留在 .cast 文件里。</span>
+      <span className="text-muted">回放只显示终端输出（新录制不再记录原始键盘输入）。</span>
     </div>
   </section>;
 }

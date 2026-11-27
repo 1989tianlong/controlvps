@@ -17,7 +17,8 @@ use crate::models::{
     ComposeEnvironmentChange, ComposeEnvironmentEntry, ComposeImageSnapshot, ComposeProject,
     ComposeServiceChange,
 };
-use crate::ssh::{self, ExecOutput};
+use crate::ssh;
+use crate::utils::{combined_output, shell_quote};
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_ENV_BYTES: u64 = 256 * 1024;
@@ -333,7 +334,7 @@ pub fn redact_project_output(
 
 fn validate_edit_input(input: &ComposeEditInput) -> AppResult<()> {
     validate_project_name(&input.project_name)?;
-    if input.content.as_bytes().len() as u64 > MAX_CONFIG_BYTES {
+    if input.content.len() as u64 > MAX_CONFIG_BYTES {
         return Err(AppError::Message("Compose YAML 不能超过 1 MiB".into()));
     }
     if input.content.trim().is_empty() {
@@ -843,18 +844,6 @@ fn compose_command(
     )
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn combined_output(output: &ExecOutput) -> String {
-    let mut text = output.stdout.clone();
-    if !output.stderr.trim().is_empty() {
-        text.push_str(&output.stderr);
-    }
-    text
-}
-
 #[allow(clippy::too_many_arguments)]
 fn execute_deployment(
     session: &Session,
@@ -1195,11 +1184,11 @@ fn parse_environment(content: &[u8]) -> AppResult<BTreeMap<String, String>> {
 }
 
 fn parse_environment_value(value: &str, line: usize) -> AppResult<String> {
-    if value.starts_with('\'') {
+    if let Some(rest) = value.strip_prefix('\'') {
         let mut output = String::new();
         let mut escaped = false;
         let mut closed = false;
-        for character in value[1..].chars() {
+        for character in rest.chars() {
             if escaped {
                 if character == '\'' {
                     output.push('\'');
@@ -1224,11 +1213,11 @@ fn parse_environment_value(value: &str, line: usize) -> AppResult<String> {
         }
         return Ok(output);
     }
-    if value.starts_with('"') {
+    if let Some(rest) = value.strip_prefix('"') {
         let mut output = String::new();
         let mut escaped = false;
         let mut closed = false;
-        for character in value[1..].chars() {
+        for character in rest.chars() {
             if escaped {
                 output.push(match character {
                     'n' => '\n',
@@ -1265,9 +1254,16 @@ fn serialize_environment(values: &BTreeMap<String, String>) -> Vec<u8> {
     let mut output = String::new();
     for (key, value) in values {
         output.push_str(key);
-        output.push_str("='");
-        output.push_str(&value.replace('\'', "\\'"));
-        output.push_str("'\n");
+        output.push_str("=\"");
+        for ch in value.chars() {
+            match ch {
+                '\\' => output.push_str("\\\\"),
+                '"' => output.push_str("\\\""),
+                '$' => output.push_str("\\$"),
+                _ => output.push(ch),
+            }
+        }
+        output.push_str("\"\n");
     }
     output.into_bytes()
 }
@@ -1371,7 +1367,8 @@ fn store_managed_environments(
 }
 
 fn redact(output: &str, mut secrets: Vec<String>) -> String {
-    secrets.retain(|value| !value.is_empty());
+    // Skip very short values (e.g. "1", "80", "true", "UTC") so ordinary logs are not mangled.
+    secrets.retain(|value| value.len() >= 6);
     secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
     secrets.dedup();
     let mut output = output.to_string();
@@ -1392,13 +1389,29 @@ fn truncate_output(output: &str) -> String {
     format!("{}\n… 输出已截断 …", &output[..boundary])
 }
 
+const STALE_LOCK_SECONDS: u64 = 30 * 60;
+
 fn acquire_lock(session: &Session, target: &ComposeTarget) -> AppResult<DeploymentLock> {
     let sftp = session.sftp()?;
     let root = target.working_directory.join(".controlvps");
     ensure_directory(&sftp, &root, 0o700)?;
     let path = root.join("deployment.lock");
-    sftp.mkdir(&path, 0o700)
-        .map_err(|_| AppError::Message("该项目已有部署或回滚正在执行，请完成后再试".into()))?;
+    if sftp.mkdir(&path, 0o700).is_err() {
+        // Reclaim stale locks left behind by a crash or dropped SSH session.
+        let now = Utc::now().timestamp().max(0) as u64;
+        let stale = sftp
+            .stat(&path)
+            .ok()
+            .and_then(|stat| stat.mtime)
+            .is_some_and(|mtime| now.saturating_sub(mtime) >= STALE_LOCK_SECONDS);
+        if stale && sftp.rmdir(&path).is_ok() && sftp.mkdir(&path, 0o700).is_ok() {
+            return Ok(DeploymentLock { sftp, path });
+        }
+        return Err(AppError::Message(
+            "该项目已有部署或回滚正在执行，请完成后再试（如因断网残留锁，30 分钟后会自动释放）"
+                .into(),
+        ));
+    }
     Ok(DeploymentLock { sftp, path })
 }
 
@@ -1451,14 +1464,12 @@ fn atomic_write(sftp: &Sftp, path: &Path, content: &[u8], mode: u32) -> AppResul
                 Some(RenameFlags::ATOMIC | RenameFlags::OVERWRITE | RenameFlags::NATIVE),
             )
             .is_err()
-        {
-            if sftp
+            && sftp
                 .rename(&temporary, path, Some(RenameFlags::OVERWRITE))
                 .is_err()
-            {
-                sftp.unlink(path)?;
-                sftp.rename(&temporary, path, Some(RenameFlags::NATIVE))?;
-            }
+        {
+            sftp.unlink(path)?;
+            sftp.rename(&temporary, path, Some(RenameFlags::NATIVE))?;
         }
         Ok(())
     })();
@@ -1499,5 +1510,33 @@ fn remove_optional(sftp: &Sftp, path: &Path) -> AppResult<()> {
         Ok(()) => Ok(()),
         Err(error) if error.code() == ssh2::ErrorCode::SFTP(2) => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_serialize_and_parse_roundtrip_handles_quotes_and_dollars() {
+        let mut input = BTreeMap::new();
+        input.insert("DB_PASS".into(), "p@ss'w\"ord$123\\end".into());
+        input.insert("PORT".into(), "8080".into());
+        let encoded = serialize_environment(&input);
+        let decoded = parse_environment(&encoded).expect("parse roundtrip");
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn redact_masks_secrets_but_preserves_short_values() {
+        let text = "Listening on port 80 with token super-secret-token-99 and flag 1";
+        let masked = redact(
+            text,
+            vec!["80".into(), "1".into(), "super-secret-token-99".into()],
+        );
+        assert_eq!(
+            masked,
+            "Listening on port 80 with token •••••• and flag 1"
+        );
     }
 }

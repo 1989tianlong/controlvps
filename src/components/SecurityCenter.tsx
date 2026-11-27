@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronRight, CircleAlert, FileCheck2, Network, Info, PackageCheck, RefreshCw, Search, Server as ServerIcon, ShieldAlert, ShieldCheck, TerminalSquare } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { formatTime } from "../lib/format";
@@ -24,24 +24,36 @@ export function SecurityCenter({ servers, trusted, onAdd, onOpenRunbooks }: Prop
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const server = servers.find((item) => item.id === selectedId) ?? servers[0];
+  const serverRef = useRef(server);
+  serverRef.current = server;
+  const serverId = server?.id ?? "";
+  const requestIdRef = useRef(0);
 
   const load = useCallback(async () => {
-    if (!server) return;
+    const target = serverRef.current;
+    if (!target) return;
+    const requestId = ++requestIdRef.current;
     setBusy(true);
     setError("");
     try {
-      setReport(await trusted(server, (allow) => api.collectSecurityReport(server.id, allow)));
+      const next = await trusted(target, (allow) => api.collectSecurityReport(target.id, allow));
+      if (requestIdRef.current !== requestId) return;
+      setReport(next);
     } catch (reason) {
+      if (requestIdRef.current !== requestId) return;
       setReport(undefined);
       setError(errorMessage(reason));
-    } finally { setBusy(false); }
-  }, [server, trusted]);
+    } finally {
+      if (requestIdRef.current === requestId) setBusy(false);
+    }
+  }, [serverId, trusted]);
 
   useEffect(() => {
+    requestIdRef.current += 1;
     setReport(undefined);
     setError("");
-    void load();
-  }, [load]);
+    if (serverId) void load();
+  }, [serverId, load]);
 
   const securityCount = report?.updates.filter((update) => update.kind === "security").length ?? 0;
   const kernelCount = report?.updates.filter((update) => update.kernel).length ?? 0;
@@ -98,7 +110,7 @@ function patchRunbook(server: Server, manager: SecurityReport["packageManager"],
     name: `${securityOnly ? "安全更新" : "系统更新"} · ${server.name}`,
     description: `由补丁中心生成，共 ${updates.length} 个软件包。建议首批灰度 1 台；不会自动重启。`,
     steps: [
-      { name: "更新前预检", command: `set -eu\nprintf '更新目标：${server.name}\\n'\ndf -h /\navailable=$(df -Pk / | awk 'NR==2 {print $4}')\n[ "\${available:-0}" -ge 524288 ] || { echo '系统盘可用空间不足 512 MiB'; exit 1; }\nif command -v systemctl >/dev/null 2>&1; then systemctl --failed --no-pager --plain; fi` },
+      { name: "更新前预检", command: `set -eu\nprintf '更新目标：%s\\n' ${shellQuote(server.name)}\ndf -h /\navailable=$(df -Pk / | awk 'NR==2 {print $4}')\n[ "\${available:-0}" -ge 524288 ] || { echo '系统盘可用空间不足 512 MiB'; exit 1; }\nif command -v systemctl >/dev/null 2>&1; then systemctl --failed --no-pager --plain; fi` },
       { name: "刷新软件源元数据", command: refresh },
       { name: `安装${securityOnly ? "安全" : "已盘点"}更新（${updates.length} 项）`, command: install },
       { name: "更新后健康检查", command: `set -eu\nif command -v systemctl >/dev/null 2>&1; then\n  failed=$(systemctl --failed --no-legend --plain --no-pager | awk 'NF && $1 != "0"')\n  if [ -n "$failed" ]; then printf '%s\\n' "$failed"; echo '存在失败的 systemd 服务'; exit 1; fi\nfi\nprintf '更新后 SSH 会话与基础健康检查正常\\n'\nif command -v ss >/dev/null 2>&1; then ss -H -lnt; fi` },

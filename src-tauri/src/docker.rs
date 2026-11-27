@@ -10,6 +10,7 @@ use crate::models::{
     DockerActionResult, DockerContainer, DockerLogs, DockerOverview, DockerService,
 };
 use crate::ssh::{self, ExecOutput};
+use crate::utils::{combined_output, shell_quote};
 
 pub fn list(session: &Session) -> AppResult<DockerOverview> {
     let version = execute_checked(session, "docker version --format '{{.Server.Version}}'")?;
@@ -225,10 +226,6 @@ fn compose_command(project: &ComposeProject) -> String {
     )
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 fn execute_compose_checked(session: &Session, command: &str) -> AppResult<ExecOutput> {
     let output = ssh::execute(session, command)?;
     if output.exit_code != 0 {
@@ -335,12 +332,4 @@ fn validate_container_id(container_id: &str) -> AppResult<()> {
         return Err(AppError::Message("Docker 容器 ID 无效".into()));
     }
     Ok(())
-}
-
-fn combined_output(output: &ExecOutput) -> String {
-    let mut text = output.stdout.clone();
-    if !output.stderr.trim().is_empty() {
-        text.push_str(&output.stderr);
-    }
-    text
 }

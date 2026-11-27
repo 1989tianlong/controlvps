@@ -16,13 +16,33 @@ export function TerminalView({ server, trusted }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
+  const serverRef = useRef(server);
+  serverRef.current = server;
   const [status, setStatus] = useState("正在建立 SSH 会话");
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [recordingId, setRecordingId] = useState("");
 
+  const connectionKey = [
+    server.id,
+    server.host,
+    server.port,
+    server.username,
+    server.authMethod,
+    server.privateKeyPath ?? "",
+    server.jumpServerId ?? "",
+    (server.jumpChain ?? []).join(","),
+    server.authProfileId ?? "",
+    server.groupName ?? "",
+    server.inheritPort,
+    server.inheritUsername,
+    server.inheritJump,
+    server.inheritAuth,
+  ].join("|");
+
   useEffect(() => {
     if (!containerRef.current) return;
+    const currentServer = serverRef.current;
     let disposed = false;
     let session: TerminalSession | null = null;
     let unlistenOutput: (() => void) | undefined;
@@ -60,7 +80,7 @@ export function TerminalView({ server, trusted }: Props) {
     terminal.open(containerRef.current);
     terminalRef.current = terminal;
     fit.fit();
-    terminal.writeln(`\x1b[2mConnecting to ${server.username}@${server.host}:${server.port}...\x1b[0m`);
+    terminal.writeln(`\x1b[2mConnecting to ${currentServer.username}@${currentServer.host}:${currentServer.port}...\x1b[0m`);
     const dataDisposable = terminal.onData((data) => {
       if (session) void api.terminalInput(session.terminalId, data).catch((reason) => setError(errorMessage(reason)));
     });
@@ -70,7 +90,7 @@ export function TerminalView({ server, trusted }: Props) {
     const observer = new ResizeObserver(() => fit.fit());
     observer.observe(containerRef.current);
 
-    trusted(server, (allow) => api.openTerminal(server.id, allow))
+    trusted(currentServer, (allow) => api.openTerminal(currentServer.id, allow))
       .then(async (opened) => {
         if (disposed) {
           await api.terminalClose(opened.terminalId).catch(() => undefined);
@@ -78,16 +98,39 @@ export function TerminalView({ server, trusted }: Props) {
         }
         session = opened;
         sessionRef.current = opened;
-        setStatus(`已连接 ${server.host}`);
-        unlistenOutput = await listen<string>(`terminal-output-${opened.terminalId}`, (event) => terminal.write(event.payload));
-        unlistenExit = await listen<string>(`terminal-exit-${opened.terminalId}`, (event) => {
+        setStatus(`已连接 ${currentServer.host}`);
+        const disposeOutput = await listen<string>(`terminal-output-${opened.terminalId}`, (event) => terminal.write(event.payload));
+        if (disposed) {
+          disposeOutput();
+          await api.terminalClose(opened.terminalId).catch(() => undefined);
+          return;
+        }
+        unlistenOutput = disposeOutput;
+        const disposeExit = await listen<string>(`terminal-exit-${opened.terminalId}`, (event) => {
           setStatus(event.payload);
           terminal.writeln(`\r\n\x1b[2m${event.payload}\x1b[0m`);
         });
-        unlistenRecording = await listen<string>(`terminal-recording-stopped-${opened.terminalId}`, (event) => {
+        if (disposed) {
+          disposeExit();
+          unlistenOutput?.();
+          await api.terminalClose(opened.terminalId).catch(() => undefined);
+          return;
+        }
+        unlistenExit = disposeExit;
+        const disposeRecording = await listen<string>(`terminal-recording-stopped-${opened.terminalId}`, (event) => {
           setRecordingId("");
           setError(event.payload);
         });
+        if (disposed) {
+          disposeRecording();
+          unlistenOutput?.();
+          unlistenExit?.();
+          await api.terminalClose(opened.terminalId).catch(() => undefined);
+          return;
+        }
+        unlistenRecording = disposeRecording;
+        fit.fit();
+        void api.terminalResize(opened.terminalId, terminal.cols, terminal.rows).catch(() => undefined);
         terminal.focus();
       })
       .catch((reason) => {
@@ -110,7 +153,7 @@ export function TerminalView({ server, trusted }: Props) {
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [server, trusted, attempt]);
+  }, [connectionKey, trusted, attempt]);
 
   const toggleRecording = async () => {
     const session = sessionRef.current;
@@ -124,7 +167,7 @@ export function TerminalView({ server, trusted }: Props) {
       }
       return;
     }
-    if (!window.confirm("录制会保存这台服务器的终端输出和键盘输入，可能包含密码等敏感内容，文件只保存在本机。开始录制？")) return;
+    if (!window.confirm("录制会保存这台服务器的终端输出（不记录原始键盘输入，但屏幕回显内容仍可能包含敏感信息），文件以仅当前用户可读权限保存在本机。开始录制？")) return;
     try {
       const handle = await api.startTerminalRecording(session.terminalId);
       setRecordingId(handle.id);

@@ -41,7 +41,11 @@ export function McpPage() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("mcp-call", () => { void loadCalls(); }).then((dispose) => {
+    void listen<McpCallRecord>("mcp-call", (event) => {
+      const record = event.payload;
+      if (!record || typeof record.id !== "number") return;
+      setCalls((current) => [record, ...current.filter((item) => item.id !== record.id)].slice(0, 30));
+    }).then((dispose) => {
       if (disposed) dispose();
       else unlisten = dispose;
     }).catch(() => undefined);
@@ -49,7 +53,7 @@ export function McpPage() {
       disposed = true;
       unlisten?.();
     };
-  }, [loadCalls]);
+  }, []);
 
   const applyStatus = (value: McpStatus) => {
     setStatus(value);
@@ -121,9 +125,12 @@ export function McpPage() {
 
   const token = status?.token ?? "";
   const masked = token ? `${token.slice(0, 6)}…${token.slice(-6)}` : "";
+  const displayToken = revealed ? token : masked;
   const endpoint = status?.endpoint ?? "";
   const claudeCommand = `claude mcp add --transport http controlvps ${endpoint} \\\n  --header "Authorization: Bearer ${token}"`;
+  const claudeCommandDisplay = `claude mcp add --transport http controlvps ${endpoint} \\\n  --header "Authorization: Bearer ${displayToken}"`;
   const cursorConfig = `{\n  "mcpServers": {\n    "controlvps": {\n      "url": "${endpoint}",\n      "headers": { "Authorization": "Bearer ${token}" }\n    }\n  }\n}`;
+  const cursorConfigDisplay = `{\n  "mcpServers": {\n    "controlvps": {\n      "url": "${endpoint}",\n      "headers": { "Authorization": "Bearer ${displayToken}" }\n    }\n  }\n}`;
 
   return <>
     <div className="page-heading">
@@ -181,7 +188,7 @@ export function McpPage() {
         </div>
       </>}
       <div className="setting-row">
-        <div><h2>连接安全</h2><p>服务只监听回环地址，校验 Bearer 令牌与请求来源；密码和私钥仍由 macOS Keychain 保管，不会出现在工具返回内容里。</p></div>
+        <div><h2>连接安全</h2><p>服务只监听回环地址，校验 Bearer 令牌与请求来源；密码、令牌和私钥均由系统钥匙串与本机文件保管，不会出现在工具返回内容里。</p></div>
         <div className="setting-value flex items-center gap-2"><ShieldAlert size={16} />本地回环 + 令牌校验</div>
       </div>
     </div>
@@ -189,16 +196,16 @@ export function McpPage() {
     <section className="panel panel-body mcp-config">
       <div className="mcp-config-head">
         <h2><PlugZap size={16} />客户端配置</h2>
-        <p>任何支持 Streamable HTTP 的 MCP 客户端都可以接入，无需安装额外程序。</p>
+        <p>任何支持 Streamable HTTP 的 MCP 客户端都可以接入，无需安装额外程序。默认隐藏令牌明文，点击复制会写入完整令牌。</p>
       </div>
       <div className="mcp-config-grid">
         <div>
           <div className="mcp-config-label"><span>Claude Code</span><button className="btn" type="button" onClick={() => void copy(claudeCommand, "Claude Code 命令")}><Copy size={14} />复制命令</button></div>
-          <pre>{claudeCommand}</pre>
+          <pre>{claudeCommandDisplay}</pre>
         </div>
         <div>
           <div className="mcp-config-label"><span>Cursor / 通用 mcp.json</span><button className="btn" type="button" onClick={() => void copy(cursorConfig, "MCP 配置")}><Copy size={14} />复制配置</button></div>
-          <pre>{cursorConfig}</pre>
+          <pre>{cursorConfigDisplay}</pre>
         </div>
       </div>
     </section>

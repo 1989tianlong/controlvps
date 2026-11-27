@@ -300,7 +300,7 @@ fn parse_apk_updates(output: &str) -> Vec<PackageUpdate> {
                 .iter()
                 .find(|column| column.starts_with('{'))
                 .map_or("apk", |value| value.trim_matches(&['{', '}'][..]));
-            Some(package_update(name, &current, &candidate, source))
+            Some(package_update(name, current, candidate, source))
         })
         .collect()
 }
@@ -676,4 +676,38 @@ fn detail(output: &ExecOutput) -> String {
         output.stderr.trim()
     };
     text.chars().take(500).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_apt_updates_and_flags_security_and_kernel() {
+        let raw = "\
+Listing...\n\
+openssl/jammy-security 3.0.2-0ubuntu1.18 amd64 [upgradable from: 3.0.2-0ubuntu1.15]\n\
+linux-image-generic/jammy-updates 5.15.0.125.125 amd64 [upgradable from: 5.15.0.122.122]\n";
+        let updates = parse_apt_updates(raw);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "openssl");
+        assert_eq!(updates[0].kind, PackageUpdateKind::Security);
+        assert!(!updates[0].kernel);
+        assert_eq!(updates[1].name, "linux-image-generic");
+        assert!(updates[1].kernel);
+    }
+
+    #[test]
+    fn parses_ss_listening_ports_and_exposure() {
+        let raw = "\
+tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=100,fd=3))\n\
+tcp LISTEN 0 128 127.0.0.1:5432 0.0.0.0:* users:((\"postgres\",pid=200,fd=4))\n";
+        let ports = parse_listening_ports(raw);
+        assert_eq!(ports.len(), 2);
+        assert_eq!(ports[0].port, 22);
+        assert_eq!(ports[0].exposure, "all_interfaces");
+        assert_eq!(ports[0].process, "sshd");
+        assert_eq!(ports[1].port, 5432);
+        assert_eq!(ports[1].exposure, "localhost");
+    }
 }

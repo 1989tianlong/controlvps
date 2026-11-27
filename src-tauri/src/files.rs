@@ -116,14 +116,10 @@ pub fn upload_with_progress(
     let result = (|| {
         let mut destination = sftp.create(&temporary)?;
         let bytes =
-            copy_with_progress(&mut source, &mut destination, total, cancel, &mut progress)?;
+            copy_with_progress(&mut source, &mut destination, total, true, cancel, &mut progress)?;
         destination.flush()?;
         drop(destination);
-        sftp.rename(
-            &temporary,
-            &remote,
-            Some(RenameFlags::ATOMIC | RenameFlags::OVERWRITE | RenameFlags::NATIVE),
-        )?;
+        rename_replace(&sftp, &temporary, &remote)?;
         Ok(FileTransfer {
             bytes,
             local_path: local.to_string_lossy().into_owned(),
@@ -165,8 +161,9 @@ pub fn download_with_progress(
     let result = (|| {
         let mut destination = File::create(&temporary)?;
         let bytes =
-            copy_with_progress(&mut source, &mut destination, total, cancel, &mut progress)?;
+            copy_with_progress(&mut source, &mut destination, total, false, cancel, &mut progress)?;
         destination.flush()?;
+        destination.sync_all()?;
         drop(destination);
         std::fs::rename(&temporary, &local)?;
         Ok(FileTransfer {
@@ -181,10 +178,29 @@ pub fn download_with_progress(
     result
 }
 
+fn rename_replace(sftp: &Sftp, temporary: &Path, destination: &Path) -> AppResult<()> {
+    if sftp
+        .rename(
+            temporary,
+            destination,
+            Some(RenameFlags::ATOMIC | RenameFlags::OVERWRITE | RenameFlags::NATIVE),
+        )
+        .is_err()
+        && sftp
+            .rename(temporary, destination, Some(RenameFlags::OVERWRITE))
+            .is_err()
+    {
+        let _ = sftp.unlink(destination);
+        sftp.rename(temporary, destination, Some(RenameFlags::NATIVE))?;
+    }
+    Ok(())
+}
+
 fn copy_with_progress(
     source: &mut impl Read,
     destination: &mut impl Write,
     total: u64,
+    strict_size: bool,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(u64, u64),
 ) -> AppResult<u64> {
@@ -203,7 +219,7 @@ fn copy_with_progress(
         transferred += count as u64;
         progress(transferred, total);
     }
-    if total > 0 && transferred != total {
+    if strict_size && total > 0 && transferred != total {
         return Err(AppError::Message(format!(
             "传输不完整：预期 {total} 字节，实际 {transferred} 字节"
         )));
@@ -219,7 +235,8 @@ fn delete_directory(sftp: &Sftp, path: &Path) -> AppResult<()> {
         if name == "." || name == ".." {
             continue;
         }
-        if stat.is_dir() {
+        let entry_stat = sftp.lstat(&entry).unwrap_or(stat);
+        if entry_stat.is_dir() && !entry_stat.file_type().is_symlink() {
             delete_directory(sftp, &entry)?;
         } else {
             sftp.unlink(&entry)?;

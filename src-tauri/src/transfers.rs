@@ -36,18 +36,29 @@ pub struct TransferRegistry {
     inner: Arc<Mutex<TransferInner>>,
 }
 
+pub struct TransferEnqueueRequest {
+    pub db: Database,
+    pub kind: FileTransferKind,
+    pub job: ConnectionJob,
+    pub local_path: String,
+    pub remote_path: String,
+    pub file_name: String,
+    pub known_hosts: PathBuf,
+    pub allow_unknown_host: bool,
+}
+
 impl TransferRegistry {
-    pub fn enqueue(
-        &self,
-        db: Database,
-        kind: FileTransferKind,
-        job: ConnectionJob,
-        local_path: String,
-        remote_path: String,
-        file_name: String,
-        known_hosts: PathBuf,
-        allow_unknown_host: bool,
-    ) -> AppResult<FileTransferTask> {
+    pub fn enqueue(&self, request: TransferEnqueueRequest) -> AppResult<FileTransferTask> {
+        let TransferEnqueueRequest {
+            db,
+            kind,
+            job,
+            local_path,
+            remote_path,
+            file_name,
+            known_hosts,
+            allow_unknown_host,
+        } = request;
         let id = Uuid::new_v4().to_string();
         let total_bytes = if kind == FileTransferKind::Upload {
             std::fs::metadata(&local_path)?.len()
@@ -139,6 +150,21 @@ impl TransferRegistry {
     }
 
     pub fn retry(&self, id: &str) -> AppResult<FileTransferTask> {
+        let (db, server_id) = {
+            let inner = self.inner.lock().map_err(|_| registry_error())?;
+            let record = inner
+                .records
+                .get(id)
+                .ok_or_else(|| AppError::Message("未找到这个传输任务".into()))?;
+            if matches!(
+                record.task.status,
+                FileTransferStatus::Queued | FileTransferStatus::Running
+            ) {
+                return Err(AppError::Message("只能重试已失败或已取消的任务".into()));
+            }
+            (record.db.clone(), record.task.server_id.clone())
+        };
+        let fresh_job = crate::runbook::connection_job(&db, &server_id)?;
         let task = {
             let mut inner = self.inner.lock().map_err(|_| registry_error())?;
             let record = inner
@@ -151,6 +177,7 @@ impl TransferRegistry {
             ) {
                 return Err(AppError::Message("只能重试已失败或已取消的任务".into()));
             }
+            record.job = fresh_job;
             record.cancel.store(false, Ordering::Release);
             record.task.status = FileTransferStatus::Queued;
             record.task.transferred_bytes = 0;
@@ -158,13 +185,10 @@ impl TransferRegistry {
             record.task.error = None;
             record.task.started_at = None;
             record.task.finished_at = None;
-            record.task.clone()
+            let cloned = record.task.clone();
+            inner.queue.push_back(id.to_string());
+            cloned
         };
-        self.inner
-            .lock()
-            .map_err(|_| registry_error())?
-            .queue
-            .push_back(id.to_string());
         self.schedule();
         Ok(task)
     }
@@ -235,6 +259,10 @@ impl TransferRegistry {
         cancel: Arc<AtomicBool>,
     ) {
         let Some((kind, db, local_path, remote_path, file_name)) = self.execution(&id) else {
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.active = inner.active.saturating_sub(1);
+            }
+            self.schedule();
             return;
         };
         let started = Instant::now();
@@ -327,6 +355,9 @@ impl TransferRegistry {
             Err(_) => return,
         };
         if let Some(record) = inner.records.get_mut(id) {
+            // Clear plaintext credentials from RAM once the transfer is no longer active.
+            record.job.credentials = ssh::Credentials::default();
+            record.job.jumps.clear();
             record.task.finished_at = Some(Utc::now().to_rfc3339());
             record.task.bytes_per_second = 0;
             match result {

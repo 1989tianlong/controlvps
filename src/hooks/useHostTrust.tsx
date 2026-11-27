@@ -17,6 +17,25 @@ export function useHostTrust() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const activeRef = useRef<Challenge | null>(null);
+  const queueRef = useRef<Challenge[]>([]);
+
+  const showNext = useCallback(() => {
+    const next = queueRef.current.shift() ?? null;
+    activeRef.current = next;
+    setError("");
+    setChallenge(next);
+  }, []);
+
+  const enqueueChallenge = useCallback((item: Challenge) => {
+    if (!activeRef.current) {
+      activeRef.current = item;
+      setError("");
+      setChallenge(item);
+    } else {
+      queueRef.current.push(item);
+    }
+  }, []);
 
   useEffect(() => {
     if (challenge && !dialogRef.current?.open) dialogRef.current?.showModal();
@@ -29,8 +48,7 @@ export function useHostTrust() {
         .then(resolve)
         .catch((reason: unknown) => {
           if (reason instanceof CommandError && reason.code === "HOST_KEY_UNKNOWN") {
-            setError("");
-            setChallenge({
+            enqueueChallenge({
               server,
               fingerprint: reason.fingerprint ?? "指纹不可用",
               host: reason.host ?? `${server.host}:${server.port}`,
@@ -43,32 +61,36 @@ export function useHostTrust() {
           }
         });
     });
-  }, []);
+  }, [enqueueChallenge]);
 
   const cancel = () => {
-    challenge?.reject(new CommandError({ code: "CANCELLED", message: "已取消连接" }));
-    setChallenge(null);
+    const current = activeRef.current;
+    current?.reject(new CommandError({ code: "CANCELLED", message: "已取消连接" }));
+    showNext();
   };
 
   const confirm = async () => {
-    if (!challenge) return;
+    const current = activeRef.current;
+    if (!current) return;
     setBusy(true);
     setError("");
     try {
-      const result = await challenge.operation(true);
-      challenge.resolve(result);
-      setChallenge(null);
+      const result = await current.operation(true);
+      current.resolve(result);
+      showNext();
     } catch (reason) {
       if (reason instanceof CommandError && reason.code === "HOST_KEY_UNKNOWN") {
-        setChallenge({
-          ...challenge,
+        const nextHop: Challenge = {
+          ...current,
           fingerprint: reason.fingerprint ?? "指纹不可用",
-          host: reason.host ?? challenge.host,
-        });
+          host: reason.host ?? current.host,
+        };
+        activeRef.current = nextHop;
+        setChallenge(nextHop);
       } else {
-        challenge.reject(reason);
+        current.reject(reason);
         setError(reason instanceof Error ? reason.message : String(reason));
-        setChallenge(null);
+        showNext();
       }
     } finally {
       setBusy(false);

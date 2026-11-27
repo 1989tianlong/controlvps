@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::error::{AppError, AppResult};
 use crate::models::{BatchExecutionResult, BatchResult, Server};
 use crate::ssh::{self, ConnectionJob};
+use crate::utils::shell_quote;
 
 pub fn execute(
     jobs: Vec<ConnectionJob>,
@@ -48,7 +49,7 @@ pub fn execute(
     })
 }
 
-fn execute_job(job: &ConnectionJob, template: &str, known_hosts: &PathBuf) -> BatchExecutionResult {
+fn execute_job(job: &ConnectionJob, template: &str, known_hosts: &Path) -> BatchExecutionResult {
     let started = Instant::now();
     let command = render_command(template, &job.server);
     let result = ssh::connect(
@@ -87,8 +88,4 @@ pub fn render_command(template: &str, server: &Server) -> String {
         .replace("{{hostname}}", &shell_quote(&server.host))
         .replace("{{username}}", &shell_quote(&server.username))
         .replace("{{name}}", &shell_quote(&server.name))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }

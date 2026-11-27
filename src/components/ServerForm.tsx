@@ -36,7 +36,9 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
   const [error, setError] = useState("");
   const [pendingHop, setPendingHop] = useState("");
   const selectedGroup = groups.find((group) => group.name === form.groupName);
-  const inheritedProfile = profiles.find((profile) => profile.id === (form.inheritAuth ? selectedGroup?.authProfileId : form.authProfileId));
+  const effectiveProfileId = form.inheritAuth ? selectedGroup?.authProfileId : form.authProfileId;
+  const activeProfile = profiles.find((profile) => profile.id === effectiveProfileId);
+  const usingProfile = Boolean(form.inheritAuth || form.authProfileId);
 
   useEffect(() => {
     if (!open) return;
@@ -59,6 +61,8 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
       jumpServerId: server.jumpServerId ?? "",
       jumpChain: server.jumpChain?.length ? server.jumpChain : server.jumpServerId ? [server.jumpServerId] : [],
       authProfileId: server.authProfileId ?? "",
+      cloudAccountId: server.cloudAccountId ?? undefined,
+      cloudResourceId: server.cloudResourceId ?? undefined,
       inheritPort: server.inheritPort,
       inheritUsername: server.inheritUsername,
       inheritJump: server.inheritJump,
@@ -107,17 +111,19 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
     setBusy(true);
     setError("");
     try {
+      const directProfileId = form.inheritAuth ? undefined : form.authProfileId || undefined;
+      const deferAuthToProfile = Boolean(form.inheritAuth || directProfileId);
       const payload: ServerInput = {
         ...form,
         port: form.inheritPort ? 22 : form.port,
         username: form.inheritUsername ? "root" : form.username,
         jumpServerId: form.inheritJump ? undefined : form.jumpChain[0],
         jumpChain: form.inheritJump ? [] : form.jumpChain,
-        authMethod: form.inheritAuth ? "key" : form.authMethod,
-        privateKeyPath: form.inheritAuth ? "~/.ssh/id_ed25519" : form.privateKeyPath,
-        authProfileId: form.inheritAuth ? undefined : form.authProfileId,
-        password: form.inheritAuth ? undefined : form.password,
-        keyPassphrase: form.inheritAuth ? undefined : form.keyPassphrase,
+        authMethod: deferAuthToProfile ? activeProfile?.authMethod ?? "key" : form.authMethod,
+        privateKeyPath: deferAuthToProfile ? activeProfile?.privateKeyPath ?? "~/.ssh/id_ed25519" : form.privateKeyPath,
+        authProfileId: directProfileId,
+        password: deferAuthToProfile ? undefined : form.password,
+        keyPassphrase: deferAuthToProfile ? undefined : form.keyPassphrase,
       };
       const saved = server ? await api.updateServer(server.id, payload) : await api.createServer(payload);
       onSaved(saved);
@@ -204,16 +210,24 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
           <section className="form-section">
             <h2>认证</h2>
             <div className="form-grid">
-              {selectedGroup && <div className="field span-2"><label className="check-row"><input type="checkbox" checked={Boolean(form.inheritAuth)} onChange={(e) => update("inheritAuth", e.target.checked)} />沿用分组认证{inheritedProfile ? `：${inheritedProfile.name}` : "（分组当前未设置认证身份）"}</label></div>}
+              {selectedGroup && <div className="field span-2"><label className="check-row"><input type="checkbox" checked={Boolean(form.inheritAuth)} onChange={(e) => update("inheritAuth", e.target.checked)} />沿用分组认证{form.inheritAuth && activeProfile ? `：${activeProfile.name}` : selectedGroup.authProfileId ? "" : "（分组当前未设置认证身份）"}</label></div>}
+              {!form.inheritAuth && profiles.length > 0 && <div className="field span-2">
+                <label htmlFor="auth-profile">复用认证身份</label>
+                <select className="select w-full" id="auth-profile" name="authProfileId" value={form.authProfileId ?? ""} onChange={(e) => update("authProfileId", e.target.value)}>
+                  <option value="">不使用认证身份（单独配置）</option>
+                  {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.authMethod === "key" ? "SSH 私钥" : profile.authMethod === "password" ? "密码" : "SSH Agent"}</option>)}
+                </select>
+                <p className="field-help">选择后将直接复用该认证身份的私钥/密码，无需在这台机器重复填写。</p>
+              </div>}
               <div className="field span-2">
                 <label htmlFor="auth-method">认证方式</label>
-                <select className="select w-full" id="auth-method" name="authMethod" disabled={form.inheritAuth} value={form.inheritAuth ? inheritedProfile?.authMethod ?? "agent" : form.authMethod} onChange={(e) => update("authMethod", e.target.value as AuthMethod)}>
+                <select className="select w-full" id="auth-method" name="authMethod" disabled={usingProfile} value={usingProfile ? activeProfile?.authMethod ?? "agent" : form.authMethod} onChange={(e) => update("authMethod", e.target.value as AuthMethod)}>
                   <option value="key">SSH 私钥</option>
                   <option value="password">密码</option>
                   <option value="agent">SSH Agent</option>
                 </select>
               </div>
-              {!form.inheritAuth && form.authMethod === "key" && <>
+              {!usingProfile && form.authMethod === "key" && <>
                 <div className="field span-2">
                   <label htmlFor="key-path">私钥路径，必填</label>
                   <input className="input" id="key-path" name="privateKeyPath" required value={form.privateKeyPath ?? ""} onChange={(e) => update("privateKeyPath", e.target.value)} />
@@ -224,12 +238,12 @@ export function ServerForm({ server, servers, open, onClose, onSaved }: Props) {
                   <input className="input" id="key-passphrase" name="keyPassphrase" type="password" autoComplete="new-password" value={form.keyPassphrase ?? ""} onChange={(e) => update("keyPassphrase", e.target.value)} />
                 </div>
               </>}
-              {!form.inheritAuth && form.authMethod === "password" && <div className="field span-2">
+              {!usingProfile && form.authMethod === "password" && <div className="field span-2">
                 <label htmlFor="server-password">SSH 密码{server ? "，留空表示保留" : "，必填"}</label>
                 <input className="input" id="server-password" name="password" type="password" autoComplete="new-password" required={!server} value={form.password ?? ""} onChange={(e) => update("password", e.target.value)} />
-                <p className="field-help">密码保存在 macOS Keychain，不会写入 SQLite。</p>
+                <p className="field-help">密码保存在系统钥匙串，不会写入 SQLite。</p>
               </div>}
-              {(form.inheritAuth ? inheritedProfile?.authMethod === "agent" : form.authMethod === "agent") && <p className="text-muted span-2">使用当前系统 SSH Agent 中已加载的身份，请确认 `ssh-add -L` 能列出密钥。</p>}
+              {(usingProfile ? activeProfile?.authMethod === "agent" : form.authMethod === "agent") && <p className="text-muted span-2">使用当前系统 SSH Agent 中已加载的身份，请确认 `ssh-add -L` 能列出密钥。</p>}
             </div>
           </section>
           <section className="form-section">

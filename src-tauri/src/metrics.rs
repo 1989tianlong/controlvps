@@ -10,13 +10,14 @@ use crate::ssh::{execute, SshConnection};
 const MONITOR_SCRIPT: &str = r#"
 printf 'hostname='; hostname
 if [ -r /etc/os-release ]; then . /etc/os-release; printf 'os=%s\n' "$PRETTY_NAME"; else printf 'os='; uname -sr; fi
-printf 'uptime='; awk '{print $1}' /proc/uptime
+printf 'uptime_before='; awk '{print $1}' /proc/uptime
 printf 'memory='; awk '/MemTotal/{total=$2} /MemAvailable/{available=$2} END {print total ":" available}' /proc/meminfo
 printf 'disk='; df -kP / | awk 'NR==2 {print $2 ":" $3}'
 printf 'load='; awk '{print $1 ":" $2 ":" $3}' /proc/loadavg
 printf 'cpu_before='; awk 'NR==1 {print $2 ":" $3 ":" $4 ":" $5 ":" $6 ":" $7 ":" $8 ":" $9}' /proc/stat
 printf 'network_before='; awk '{gsub(":", " "); if ($1 != "lo" && $2 ~ /^[0-9]+$/) {rx+=$2; tx+=$10}} END {printf "%.0f:%.0f\n", rx, tx}' /proc/net/dev
 sleep 1
+printf 'uptime='; awk '{print $1}' /proc/uptime
 printf 'cpu_after='; awk 'NR==1 {print $2 ":" $3 ":" $4 ":" $5 ":" $6 ":" $7 ":" $8 ":" $9}' /proc/stat
 printf 'network_after='; awk '{gsub(":", " "); if ($1 != "lo" && $2 ~ /^[0-9]+$/) {rx+=$2; tx+=$10}} END {printf "%.0f:%.0f\n", rx, tx}' /proc/net/dev
 "#;
@@ -42,7 +43,12 @@ pub fn collect(server_id: &str, connection: &SshConnection) -> AppResult<ServerM
             .ok_or_else(|| AppError::Message(format!("服务器未返回指标：{key}")))
     };
     let (cpu_before, cpu_after) = (cpu(value("cpu_before")?), cpu(value("cpu_after")?));
-    let elapsed = started.elapsed().as_secs_f64().max(0.001);
+    let uptime_after = number(value("uptime")?);
+    let remote_elapsed = values
+        .get("uptime_before")
+        .map(|before| uptime_after - number(before))
+        .filter(|delta| *delta >= 0.1 && *delta <= 60.0);
+    let elapsed = remote_elapsed.unwrap_or_else(|| started.elapsed().as_secs_f64().max(1.0));
     let (network_before, network_after) = (
         pair(value("network_before")?),
         pair(value("network_after")?),
@@ -57,7 +63,7 @@ pub fn collect(server_id: &str, connection: &SshConnection) -> AppResult<ServerM
         server_id: server_id.to_string(),
         hostname: value("hostname")?.clone(),
         os: value("os")?.clone(),
-        uptime_seconds: number(value("uptime")?),
+        uptime_seconds: uptime_after,
         cpu_usage: cpu_percentage(cpu_before, cpu_after),
         memory_total,
         memory_used: memory_total.saturating_sub(memory_available),
@@ -67,7 +73,11 @@ pub fn collect(server_id: &str, connection: &SshConnection) -> AppResult<ServerM
             / elapsed,
         network_tx_bytes_per_second: network_after.1.saturating_sub(network_before.1) as f64
             / elapsed,
-        load_average: [load[0], load[1], load[2]],
+        load_average: [
+            load.first().copied().unwrap_or(0.0),
+            load.get(1).copied().unwrap_or(0.0),
+            load.get(2).copied().unwrap_or(0.0),
+        ],
         collected_at: Utc::now().to_rfc3339(),
     })
 }

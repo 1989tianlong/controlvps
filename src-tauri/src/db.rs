@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
@@ -19,17 +20,41 @@ use crate::models::{
     ServiceEvent, ServiceEventKind, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind,
     ServiceMonitorView, ServiceProbe, ServiceSample, Snippet, SnippetInput, WorkspaceBackup,
 };
+#[cfg(not(test))]
+use crate::utils;
+
+const SCHEMA_VERSION: i64 = 2;
+#[cfg(not(test))]
+const MCP_TOKEN_ACCOUNT: &str = "mcp:bearer-token";
+const PRUNE_EVERY_N_WRITES: u64 = 50;
 
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
+    write_counter: Arc<AtomicU64>,
 }
 
 impl Database {
     pub fn new(path: &std::path::Path) -> AppResult<Self> {
         let connection = Connection::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+        Self::init(connection)
+    }
+
+    #[cfg(test)]
+    pub fn in_memory() -> AppResult<Self> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(mut connection: Connection) -> AppResult<Self> {
         connection.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
              PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS servers (
                 id TEXT PRIMARY KEY,
@@ -295,64 +320,86 @@ impl Database {
                 value TEXT NOT NULL
              );",
         )?;
-        let has_forward_kind = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('port_forwards') WHERE name = 'kind')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !has_forward_kind {
-            connection.execute(
-                "ALTER TABLE port_forwards ADD COLUMN kind TEXT NOT NULL DEFAULT 'local'",
+        let current_version: i64 =
+            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if current_version < SCHEMA_VERSION {
+            let tx = connection.transaction()?;
+            let has_forward_kind = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('port_forwards') WHERE name = 'kind')",
                 [],
-            )?;
-        }
-        let has_jump_server = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = 'jump_server_id')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !has_jump_server {
-            connection.execute("ALTER TABLE servers ADD COLUMN jump_server_id TEXT", [])?;
-        }
-        let has_jump_chain = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = 'jump_chain')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !has_jump_chain {
-            connection.execute("ALTER TABLE servers ADD COLUMN jump_chain TEXT", [])?;
-        }
-        for column in ["auth_profile_id", "cloud_account_id", "cloud_resource_id"] {
-            let exists = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
-                [column],
                 |row| row.get::<_, bool>(0),
             )?;
-            if !exists {
-                connection.execute(&format!("ALTER TABLE servers ADD COLUMN {column} TEXT"), [])?;
-            }
-        }
-        for column in [
-            "inherit_port",
-            "inherit_username",
-            "inherit_jump",
-            "inherit_auth",
-        ] {
-            let exists = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
-                [column],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !exists {
-                connection.execute(
-                    &format!("ALTER TABLE servers ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"),
+            if !has_forward_kind {
+                tx.execute(
+                    "ALTER TABLE port_forwards ADD COLUMN kind TEXT NOT NULL DEFAULT 'local'",
                     [],
                 )?;
             }
+            let has_jump_server = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = 'jump_server_id')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !has_jump_server {
+                tx.execute("ALTER TABLE servers ADD COLUMN jump_server_id TEXT", [])?;
+            }
+            let has_jump_chain = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = 'jump_chain')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !has_jump_chain {
+                tx.execute("ALTER TABLE servers ADD COLUMN jump_chain TEXT", [])?;
+            }
+            for column in ["auth_profile_id", "cloud_account_id", "cloud_resource_id"] {
+                let exists = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
+                    [column],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !exists {
+                    tx.execute(&format!("ALTER TABLE servers ADD COLUMN {column} TEXT"), [])?;
+                }
+            }
+            for column in [
+                "inherit_port",
+                "inherit_username",
+                "inherit_jump",
+                "inherit_auth",
+            ] {
+                let exists = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name = ?1)",
+                    [column],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !exists {
+                    tx.execute(
+                        &format!(
+                            "ALTER TABLE servers ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                        ),
+                        [],
+                    )?;
+                }
+            }
+            tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_metric_samples_collected
+                 ON metric_samples(collected_at);
+                 CREATE INDEX IF NOT EXISTS idx_service_samples_monitor_checked
+                 ON service_samples(monitor_id, checked_at);
+                 CREATE INDEX IF NOT EXISTS idx_service_samples_checked
+                 ON service_samples(checked_at);",
+            )?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
         }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            write_counter: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    fn should_prune(&self) -> bool {
+        self.write_counter.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY_N_WRITES == 0
     }
 
     fn connection(&self) -> AppResult<std::sync::MutexGuard<'_, Connection>> {
@@ -526,23 +573,56 @@ impl Database {
                 "这台 VPS 正被 {dependents} 台服务器用作跳板机，请先修改它们的连接路由"
             )));
         }
-        Ok(())
-    }
-
-    pub fn delete_server(&self, id: &str) -> AppResult<()> {
-        self.ensure_server_deletable(id)?;
-        let connection = self.connection()?;
-        let groups = connection.query_row(
+        let groups: i64 = connection.query_row(
             "SELECT COUNT(*) FROM server_groups WHERE jump_server_id = ?1",
             [id],
-            |row| row.get::<_, i64>(0),
+            |row| row.get(0),
         )?;
         if groups > 0 {
             return Err(AppError::Message(format!(
                 "这台 VPS 是 {groups} 个分组的默认跳板机，请先修改分组"
             )));
         }
-        connection.execute("DELETE FROM servers WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn delete_server(&self, id: &str) -> AppResult<()> {
+        self.ensure_server_deletable(id)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction()?;
+        // Remove deleted server ID from any runbook schedules so scheduled runs do not break.
+        let schedules: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT id, server_ids FROM runbook_schedules")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let now = Utc::now().to_rfc3339();
+        for (schedule_id, raw_ids) in schedules {
+            let Ok(mut server_ids) = serde_json::from_str::<Vec<String>>(&raw_ids) else {
+                continue;
+            };
+            let before = server_ids.len();
+            server_ids.retain(|item| item != id);
+            if server_ids.len() != before {
+                let encoded = serde_json::to_string(&server_ids)
+                    .map_err(|error| AppError::Message(error.to_string()))?;
+                if server_ids.is_empty() {
+                    tx.execute(
+                        "UPDATE runbook_schedules SET server_ids = ?2, enabled = 0, next_run_at = NULL, updated_at = ?3 WHERE id = ?1",
+                        params![schedule_id, encoded, now],
+                    )?;
+                } else {
+                    tx.execute(
+                        "UPDATE runbook_schedules SET server_ids = ?2, updated_at = ?3 WHERE id = ?1",
+                        params![schedule_id, encoded, now],
+                    )?;
+                }
+            }
+        }
+        tx.execute("DELETE FROM servers WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -816,22 +896,42 @@ impl Database {
         input: &ServerGroupInput,
     ) -> AppResult<ServerGroup> {
         validate_group(self, input)?;
-        self.connection()?
-            .execute(
-                "UPDATE server_groups SET name = ?2, jump_server_id = ?3, auth_profile_id = ?4,
-                default_port = ?5, default_username = ?6, updated_at = ?7 WHERE id = ?1",
-                params![
-                    id,
-                    input.name.trim(),
-                    clean(input.jump_server_id.as_deref()),
-                    clean(input.auth_profile_id.as_deref()),
-                    input.default_port,
-                    clean(input.default_username.as_deref()),
-                    Utc::now().to_rfc3339(),
-                ],
+        let new_name = input.name.trim();
+        let mut connection = self.connection()?;
+        let tx = connection.transaction()?;
+        let old_name: String = tx
+            .query_row(
+                "SELECT name FROM server_groups WHERE id = ?1",
+                [id],
+                |row| row.get(0),
             )
-            .map_err(unique_group_error)?;
-        self.get_server_group_by_name(input.name.trim())
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => AppError::Message("未找到这个分组".into()),
+                other => other.into(),
+            })?;
+        tx.execute(
+            "UPDATE server_groups SET name = ?2, jump_server_id = ?3, auth_profile_id = ?4,
+                default_port = ?5, default_username = ?6, updated_at = ?7 WHERE id = ?1",
+            params![
+                id,
+                new_name,
+                clean(input.jump_server_id.as_deref()),
+                clean(input.auth_profile_id.as_deref()),
+                input.default_port,
+                clean(input.default_username.as_deref()),
+                Utc::now().to_rfc3339(),
+            ],
+        )
+        .map_err(unique_group_error)?;
+        if !old_name.eq_ignore_ascii_case(new_name) || old_name != new_name {
+            tx.execute(
+                "UPDATE servers SET group_name = ?2 WHERE group_name = ?1 COLLATE NOCASE",
+                params![old_name, new_name],
+            )?;
+        }
+        tx.commit()?;
+        drop(connection);
+        self.get_server_group_by_name(new_name)
     }
 
     pub fn delete_server_group(&self, id: &str) -> AppResult<()> {
@@ -1595,6 +1695,16 @@ impl Database {
         Ok(())
     }
 
+    pub fn recover_interrupted_data_protection_runs(&self) -> AppResult<usize> {
+        let count = self.connection()?.execute(
+            "UPDATE data_protection_runs SET status = 'failed', finished_at = ?1,
+                error = '应用退出导致本地备份任务中断；请检查 Restic 仓库状态'
+             WHERE status = 'running'",
+            [Utc::now().to_rfc3339()],
+        )?;
+        Ok(count)
+    }
+
     pub fn get_data_protection_run(&self, id: &str) -> AppResult<DataProtectionRun> {
         self.connection()?
             .query_row(
@@ -1937,18 +2047,24 @@ impl Database {
                 checked_at,
             ],
         )?;
-        let cutoff = (Utc::now() - Duration::days(30)).to_rfc3339();
-        transaction.execute(
-            "DELETE FROM service_samples WHERE checked_at < ?1",
-            [cutoff],
-        )?;
-        transaction.execute(
-            "DELETE FROM service_samples WHERE monitor_id = ?1 AND id IN (
-                SELECT id FROM service_samples WHERE monitor_id = ?1
-                ORDER BY id DESC LIMIT -1 OFFSET 50000
-             )",
-            [&monitor.id],
-        )?;
+        if self.should_prune() {
+            let cutoff = (Utc::now() - Duration::days(30)).to_rfc3339();
+            transaction.execute(
+                "DELETE FROM service_samples WHERE checked_at < ?1",
+                [cutoff],
+            )?;
+            transaction.execute(
+                "DELETE FROM service_samples WHERE monitor_id = ?1 AND id IN (
+                    SELECT id FROM service_samples WHERE monitor_id = ?1
+                    ORDER BY id DESC LIMIT -1 OFFSET 50000
+                 )",
+                [&monitor.id],
+            )?;
+            let _ = transaction.execute(
+                "DELETE FROM service_events WHERE id NOT IN (SELECT id FROM service_events ORDER BY id DESC LIMIT 1000)",
+                [],
+            );
+        }
         let mut statement = transaction.prepare(
             "SELECT success FROM service_samples WHERE monitor_id = ?1 ORDER BY id DESC LIMIT 20",
         )?;
@@ -2065,18 +2181,40 @@ impl Database {
                 metrics.collected_at,
             ],
         )?;
-        let cutoff = (Utc::now() - Duration::days(7)).to_rfc3339();
-        connection.execute(
-            "DELETE FROM metric_samples WHERE collected_at < ?1",
-            [cutoff],
-        )?;
-        connection.execute(
-            "DELETE FROM metric_samples WHERE server_id = ?1 AND id IN (
-                SELECT id FROM metric_samples WHERE server_id = ?1
-                ORDER BY id DESC LIMIT -1 OFFSET 50000
-             )",
-            [&metrics.server_id],
-        )?;
+        if self.should_prune() {
+            let cutoff = (Utc::now() - Duration::days(7)).to_rfc3339();
+            connection.execute(
+                "DELETE FROM metric_samples WHERE collected_at < ?1",
+                [cutoff],
+            )?;
+            connection.execute(
+                "DELETE FROM metric_samples WHERE server_id = ?1 AND id IN (
+                    SELECT id FROM metric_samples WHERE server_id = ?1
+                    ORDER BY id DESC LIMIT -1 OFFSET 50000
+                 )",
+                [&metrics.server_id],
+            )?;
+            let _ = connection.execute(
+                "DELETE FROM operation_logs WHERE id NOT IN (SELECT id FROM operation_logs ORDER BY id DESC LIMIT 2000)",
+                [],
+            );
+            let _ = connection.execute(
+                "DELETE FROM alert_events WHERE id NOT IN (SELECT id FROM alert_events ORDER BY id DESC LIMIT 1000)",
+                [],
+            );
+            let _ = connection.execute(
+                "DELETE FROM mcp_calls WHERE id NOT IN (SELECT id FROM mcp_calls ORDER BY id DESC LIMIT 1000)",
+                [],
+            );
+            let _ = connection.execute(
+                "DELETE FROM runbook_executions WHERE id NOT IN (SELECT id FROM runbook_executions ORDER BY created_at DESC LIMIT 500)",
+                [],
+            );
+            let _ = connection.execute(
+                "DELETE FROM data_protection_runs WHERE id NOT IN (SELECT id FROM data_protection_runs ORDER BY started_at DESC LIMIT 500)",
+                [],
+            );
+        }
         Ok(())
     }
 
@@ -2151,18 +2289,39 @@ impl Database {
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        if let Some(value) = stored {
-            if let Ok(settings) = serde_json::from_str::<McpSettings>(&value) {
-                if !settings.token.is_empty() {
-                    return Ok(settings);
+        let mut settings = stored
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<McpSettings>(value).ok())
+            .unwrap_or_default();
+        // Prefer OS Keychain for the MCP bearer token; migrate any legacy plaintext SQLite token once.
+        let legacy_token = std::mem::take(&mut settings.token);
+        let token = match load_mcp_token() {
+            Ok(Some(secret)) if !secret.is_empty() => {
+                if !legacy_token.is_empty() {
+                    let _ = self.store_mcp_settings(&settings);
+                }
+                secret
+            }
+            Ok(_) => {
+                let next = if !legacy_token.is_empty() {
+                    legacy_token
+                } else {
+                    random_token()
+                };
+                if store_mcp_token(&next).is_ok() {
+                    let _ = self.store_mcp_settings(&settings);
+                }
+                next
+            }
+            Err(_) => {
+                if !legacy_token.is_empty() {
+                    legacy_token
+                } else {
+                    random_token()
                 }
             }
-        }
-        let settings = McpSettings {
-            token: random_token(),
-            ..McpSettings::default()
         };
-        self.store_mcp_settings(&settings)?;
+        settings.token = token;
         Ok(settings)
     }
 
@@ -2173,28 +2332,35 @@ impl Database {
             ));
         }
         let current = self.mcp_settings()?;
-        let settings = McpSettings {
+        let mut settings = McpSettings {
             enabled: input.enabled,
             port: input.port,
             allow_execute: input.allow_execute,
             allow_unknown_host: input.allow_unknown_host,
-            token: current.token,
+            token: String::new(),
         };
         self.store_mcp_settings(&settings)?;
+        settings.token = current.token;
         Ok(settings)
     }
 
     pub fn rotate_mcp_token(&self) -> AppResult<McpSettings> {
-        let settings = McpSettings {
-            token: random_token(),
-            ..self.mcp_settings()?
-        };
+        let mut settings = self.mcp_settings()?;
+        let next_token = random_token();
+        store_mcp_token(&next_token)?;
+        settings.token = String::new();
         self.store_mcp_settings(&settings)?;
+        settings.token = next_token;
         Ok(settings)
     }
 
     fn store_mcp_settings(&self, settings: &McpSettings) -> AppResult<()> {
-        let value = serde_json::to_string(settings)
+        // Never persist the plaintext MCP bearer token into SQLite app_settings.
+        let redacted = McpSettings {
+            token: String::new(),
+            ..settings.clone()
+        };
+        let value = serde_json::to_string(&redacted)
             .map_err(|error| AppError::Message(error.to_string()))?;
         self.connection()?.execute(
             "INSERT INTO app_settings (key, value) VALUES ('mcp', ?1)
@@ -2375,29 +2541,73 @@ fn service_monitor_view(
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     let consecutive_failures = recent.iter().take_while(|success| !**success).count() as u32;
+    let (uptime_24h, uptime_7d, uptime_30d) = service_uptimes(connection, &monitor.id)?;
     Ok(ServiceMonitorView {
         monitor: monitor.clone(),
         latest,
         active_events,
         consecutive_failures,
-        uptime_24h: service_uptime(connection, &monitor.id, Duration::hours(24))?,
-        uptime_7d: service_uptime(connection, &monitor.id, Duration::days(7))?,
-        uptime_30d: service_uptime(connection, &monitor.id, Duration::days(30))?,
+        uptime_24h,
+        uptime_7d,
+        uptime_30d,
     })
 }
 
-fn service_uptime(
+fn service_uptimes(
     connection: &Connection,
     monitor_id: &str,
-    duration: Duration,
-) -> rusqlite::Result<Option<f64>> {
-    let cutoff = (Utc::now() - duration).to_rfc3339();
-    let (total, successful): (i64, Option<i64>) = connection.query_row(
-        "SELECT COUNT(*), SUM(success) FROM service_samples WHERE monitor_id = ?1 AND checked_at >= ?2",
-        params![monitor_id, cutoff],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+) -> rusqlite::Result<(Option<f64>, Option<f64>, Option<f64>)> {
+    let now = Utc::now();
+    let cutoff_24h = (now - Duration::hours(24)).to_rfc3339();
+    let cutoff_7d = (now - Duration::days(7)).to_rfc3339();
+    let cutoff_30d = (now - Duration::days(30)).to_rfc3339();
+    let row: (i64, i64, i64, i64, i64, i64) = connection.query_row(
+        "SELECT
+            COALESCE(SUM(CASE WHEN checked_at >= ?2 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN checked_at >= ?2 AND success = 1 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN checked_at >= ?3 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN checked_at >= ?3 AND success = 1 THEN 1 ELSE 0 END), 0),
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0)
+         FROM service_samples
+         WHERE monitor_id = ?1 AND checked_at >= ?4",
+        params![monitor_id, cutoff_24h, cutoff_7d, cutoff_30d],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        },
     )?;
-    Ok((total > 0).then(|| successful.unwrap_or_default() as f64 / total as f64 * 100.0))
+    let pct = |total: i64, ok: i64| (total > 0).then(|| ok as f64 / total as f64 * 100.0);
+    Ok((pct(row.0, row.1), pct(row.2, row.3), pct(row.4, row.5)))
+}
+
+fn load_mcp_token() -> AppResult<Option<String>> {
+    #[cfg(test)]
+    {
+        Ok(None)
+    }
+    #[cfg(not(test))]
+    {
+        utils::get_secret(MCP_TOKEN_ACCOUNT)
+    }
+}
+
+fn store_mcp_token(token: &str) -> AppResult<()> {
+    #[cfg(test)]
+    {
+        let _ = token;
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        utils::set_secret(MCP_TOKEN_ACCOUNT, token)
+    }
 }
 
 fn service_event_transition(
@@ -3237,4 +3447,185 @@ fn row_to_log(row: &Row<'_>) -> rusqlite::Result<OperationLog> {
         summary: row.get(5)?,
         created_at: row.get(6)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        AuthMethod, RunbookStepInput, ServiceMonitorInput, ServiceMonitorKind, ServiceProbe,
+    };
+
+    fn sample_server(name: &str, host: &str) -> ServerInput {
+        ServerInput {
+            name: name.into(),
+            host: host.into(),
+            port: 22,
+            username: "root".into(),
+            auth_method: AuthMethod::Agent,
+            private_key_path: None,
+            password: None,
+            key_passphrase: None,
+            group_name: None,
+            tags: vec![],
+            provider: None,
+            region: None,
+            notes: None,
+            cost: None,
+            currency: None,
+            expires_at: None,
+            jump_server_id: None,
+            jump_chain: vec![],
+            auth_profile_id: None,
+            cloud_account_id: None,
+            cloud_resource_id: None,
+            inherit_port: false,
+            inherit_username: false,
+            inherit_jump: false,
+            inherit_auth: false,
+        }
+    }
+
+    #[test]
+    fn schema_version_and_group_jump_guard() {
+        let db = Database::in_memory().expect("in-memory db");
+        let version: i64 = db
+            .connection()
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let jump = db
+            .create_server(&sample_server("bastion", "10.0.0.1"))
+            .expect("create bastion");
+        let group = db
+            .create_server_group(&ServerGroupInput {
+                name: "prod".into(),
+                jump_server_id: Some(jump.id.clone()),
+                auth_profile_id: None,
+                default_port: Some(2222),
+                default_username: Some("ops".into()),
+            })
+            .expect("create group");
+
+        let err = db.ensure_server_deletable(&jump.id).unwrap_err();
+        assert!(err.to_string().contains("默认跳板机"));
+
+        // Renaming a group cascades to servers belonging to it.
+        let mut app_input = sample_server("app-1", "10.0.0.2");
+        app_input.group_name = Some("prod".into());
+        let app = db.create_server(&app_input).unwrap();
+
+        db.update_server_group(
+            &group.id,
+            &ServerGroupInput {
+                name: "production".into(),
+                jump_server_id: None,
+                auth_profile_id: None,
+                default_port: Some(2222),
+                default_username: Some("ops".into()),
+            },
+        )
+        .unwrap();
+
+        let reloaded = db.get_server(&app.id).unwrap();
+        assert_eq!(reloaded.group_name.as_deref(), Some("production"));
+        // After detaching bastion from group, it can be deleted.
+        db.ensure_server_deletable(&jump.id).unwrap();
+    }
+
+    #[test]
+    fn delete_server_cleans_runbook_schedules() {
+        let db = Database::in_memory().unwrap();
+        let s1 = db
+            .create_server(&sample_server("node-1", "10.0.0.1"))
+            .unwrap();
+        let s2 = db
+            .create_server(&sample_server("node-2", "10.0.0.2"))
+            .unwrap();
+        let runbook = db
+            .create_runbook(&RunbookInput {
+                name: "check".into(),
+                description: None,
+                steps: vec![RunbookStepInput {
+                    name: "uname".into(),
+                    command: "uname -a".into(),
+                }],
+            })
+            .unwrap();
+        let schedule = db
+            .create_runbook_schedule(&RunbookScheduleInput {
+                runbook_id: runbook.id.clone(),
+                server_ids: vec![s1.id.clone(), s2.id.clone()],
+                interval_minutes: 60,
+                enabled: true,
+                concurrency: 2,
+                canary_count: 0,
+                timeout_seconds: 60,
+            })
+            .unwrap();
+
+        db.delete_server(&s1.id).unwrap();
+        let schedules = db.list_runbook_schedules().unwrap();
+        let updated = schedules.iter().find(|item| item.id == schedule.id).unwrap();
+        assert_eq!(updated.server_ids, vec![s2.id.clone()]);
+        assert!(updated.enabled);
+
+        db.delete_server(&s2.id).unwrap();
+        let schedules = db.list_runbook_schedules().unwrap();
+        let updated = schedules.iter().find(|item| item.id == schedule.id).unwrap();
+        assert!(updated.server_ids.is_empty());
+        assert!(!updated.enabled);
+    }
+
+    #[test]
+    fn service_monitor_single_query_uptime() {
+        let db = Database::in_memory().unwrap();
+        let monitor_view = db
+            .create_service_monitor(&ServiceMonitorInput {
+                name: "api".into(),
+                kind: ServiceMonitorKind::Http,
+                target: "https://example.com".into(),
+                port: None,
+                server_id: None,
+                interval_seconds: 60,
+                timeout_seconds: 10,
+                expected_status: 200,
+                keyword: None,
+                failure_threshold: 2,
+                certificate_warning_days: 14,
+                enabled: true,
+            })
+            .unwrap();
+        let monitor_id = monitor_view.monitor.id.clone();
+        db.record_service_probe(
+            &monitor_view.monitor,
+            &ServiceProbe {
+                success: true,
+                latency_ms: 42,
+                status_code: Some(200),
+                detail: "ok".into(),
+                certificate_expires_at: None,
+                certificate_days_remaining: None,
+            },
+        )
+        .unwrap();
+        db.record_service_probe(
+            &monitor_view.monitor,
+            &ServiceProbe {
+                success: false,
+                latency_ms: 100,
+                status_code: Some(500),
+                detail: "err".into(),
+                certificate_expires_at: None,
+                certificate_days_remaining: None,
+            },
+        )
+        .unwrap();
+        let view = db.service_monitor_view(&monitor_id).unwrap();
+        assert_eq!(view.uptime_24h, Some(50.0));
+        assert_eq!(view.uptime_7d, Some(50.0));
+        assert_eq!(view.uptime_30d, Some(50.0));
+    }
 }

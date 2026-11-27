@@ -5,7 +5,7 @@ use std::path::Path;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -18,11 +18,23 @@ use crate::models::{
     RunbookStepInput, Server, ServerInput, ServiceMonitorInput, SnippetInput, WorkspaceBackup,
 };
 use crate::ssh;
+use crate::utils;
 
 const MAGIC: &str = "CONTROLVPS";
 const FORMAT_VERSION: u32 = 1;
 const MAX_BACKUP_BYTES: u64 = 64 * 1024 * 1024;
 const AEAD_CONTEXT: &[u8] = b"controlvps-workspace-backup-v1";
+const ARGON2_M_COST: u32 = 19_456;
+const ARGON2_T_COST: u32 = 2;
+const ARGON2_P_COST: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KdfParams {
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +42,8 @@ struct EncryptedEnvelope {
     magic: String,
     format_version: u32,
     kdf: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kdf_params: Option<KdfParams>,
     cipher: String,
     salt: String,
     nonce: String,
@@ -66,9 +80,11 @@ pub fn create(
             }
         }
     }
-    let plaintext = serde_json::to_vec(&backup)
+    let mut plaintext = serde_json::to_vec(&backup)
         .map_err(|error| AppError::Message(format!("无法序列化备份：{error}")))?;
-    let envelope = encrypt(&plaintext, password)?;
+    let envelope = encrypt(&plaintext, password);
+    utils::zeroize_bytes(&mut plaintext);
+    let envelope = envelope?;
     let encoded = serde_json::to_vec_pretty(&envelope)
         .map_err(|error| AppError::Message(format!("无法生成备份文件：{error}")))?;
     atomic_write(path, &encoded)?;
@@ -355,7 +371,12 @@ fn encrypt(plaintext: &[u8], password: &str) -> AppResult<EncryptedEnvelope> {
     let mut nonce = [0_u8; 12];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
-    let cipher = cipher(password, &salt)?;
+    let kdf_params = KdfParams {
+        m_cost: ARGON2_M_COST,
+        t_cost: ARGON2_T_COST,
+        p_cost: ARGON2_P_COST,
+    };
+    let cipher = cipher(password, &salt, Some(kdf_params))?;
     let ciphertext = cipher
         .encrypt(
             Nonce::from_slice(&nonce),
@@ -369,6 +390,7 @@ fn encrypt(plaintext: &[u8], password: &str) -> AppResult<EncryptedEnvelope> {
         magic: MAGIC.into(),
         format_version: FORMAT_VERSION,
         kdf: "argon2id".into(),
+        kdf_params: Some(kdf_params),
         cipher: "aes-256-gcm".into(),
         salt: BASE64.encode(salt),
         nonce: BASE64.encode(nonce),
@@ -385,6 +407,10 @@ fn decrypt_file(path: &Path, password: &str) -> AppResult<WorkspaceBackup> {
     let bytes = std::fs::read(path)?;
     let envelope: EncryptedEnvelope = serde_json::from_slice(&bytes)
         .map_err(|_| AppError::Message("不是有效的 ControlVPS 加密备份".into()))?;
+    decrypt_envelope(&envelope, password)
+}
+
+fn decrypt_envelope(envelope: &EncryptedEnvelope, password: &str) -> AppResult<WorkspaceBackup> {
     if envelope.magic != MAGIC
         || envelope.format_version != FORMAT_VERSION
         || envelope.kdf != "argon2id"
@@ -392,18 +418,18 @@ fn decrypt_file(path: &Path, password: &str) -> AppResult<WorkspaceBackup> {
     {
         return Err(AppError::Message("备份格式或版本不受支持".into()));
     }
-    let salt = BASE64.decode(envelope.salt).map_err(|_| invalid_backup())?;
+    let salt = BASE64.decode(&envelope.salt).map_err(|_| invalid_backup())?;
     let nonce = BASE64
-        .decode(envelope.nonce)
+        .decode(&envelope.nonce)
         .map_err(|_| invalid_backup())?;
     let ciphertext = BASE64
-        .decode(envelope.ciphertext)
+        .decode(&envelope.ciphertext)
         .map_err(|_| invalid_backup())?;
     if salt.len() != 16 || nonce.len() != 12 {
         return Err(invalid_backup());
     }
-    let cipher = cipher(password, &salt)?;
-    let plaintext = cipher
+    let cipher = cipher(password, &salt, envelope.kdf_params)?;
+    let mut plaintext = cipher
         .decrypt(
             Nonce::from_slice(&nonce),
             Payload {
@@ -412,15 +438,36 @@ fn decrypt_file(path: &Path, password: &str) -> AppResult<WorkspaceBackup> {
             },
         )
         .map_err(|_| AppError::Message("备份密码错误或文件已损坏".into()))?;
-    serde_json::from_slice(&plaintext).map_err(|_| invalid_backup())
+    let parsed = serde_json::from_slice(&plaintext).map_err(|_| invalid_backup());
+    utils::zeroize_bytes(&mut plaintext);
+    parsed
 }
 
-fn cipher(password: &str, salt: &[u8]) -> AppResult<Aes256Gcm> {
+fn cipher(password: &str, salt: &[u8], kdf_params: Option<KdfParams>) -> AppResult<Aes256Gcm> {
     let mut key = [0_u8; 32];
-    Argon2::default()
-        .hash_password_into(password.as_bytes(), salt, &mut key)
-        .map_err(|_| AppError::Message("无法派生备份加密密钥".into()))?;
-    Aes256Gcm::new_from_slice(&key).map_err(|_| AppError::Message("无法初始化备份加密".into()))
+    let argon2 = match kdf_params {
+        Some(spec) => {
+            if !(8_192..=524_288).contains(&spec.m_cost)
+                || !(1..=20).contains(&spec.t_cost)
+                || !(1..=16).contains(&spec.p_cost)
+            {
+                return Err(invalid_backup());
+            }
+            let params = Params::new(spec.m_cost, spec.t_cost, spec.p_cost, Some(32))
+                .map_err(|_| invalid_backup())?;
+            Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        }
+        None => Argon2::default(),
+    };
+    let hash_result = argon2.hash_password_into(password.as_bytes(), salt, &mut key);
+    if hash_result.is_err() {
+        utils::zeroize_bytes(&mut key);
+        return Err(AppError::Message("无法派生备份加密密钥".into()));
+    }
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|_| AppError::Message("无法初始化备份加密".into()));
+    utils::zeroize_bytes(&mut key);
+    cipher
 }
 
 fn validate_password(password: &str) -> AppResult<()> {
@@ -450,17 +497,16 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> AppResult<()> {
         .ok_or_else(|| AppError::Message("备份文件路径无效".into()))?;
     let temporary = parent.join(format!(".{name}.{}.tmp", Uuid::new_v4()));
     let write_result = (|| -> AppResult<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
         std::fs::rename(&temporary, path)?;
         Ok(())
     })();
@@ -468,4 +514,48 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> AppResult<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     write_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::MonitoringSettings;
+
+    fn sample_backup() -> WorkspaceBackup {
+        WorkspaceBackup {
+            format_version: 1,
+            created_at: "2026-11-27T00:00:00Z".into(),
+            servers: Vec::new(),
+            snippets: Vec::new(),
+            runbooks: Vec::new(),
+            port_forwards: Vec::new(),
+            service_monitors: Vec::new(),
+            monitoring: MonitoringSettings::default(),
+            service_webhook_enabled: Some(false),
+            service_webhook_url: None,
+            includes_credentials: false,
+            credentials: HashMap::new(),
+            compose_environments: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip_and_wrong_password_rejection() {
+        let backup = sample_backup();
+        let bytes = serde_json::to_vec(&backup).expect("serialize");
+        let envelope = encrypt(&bytes, "strong-passphrase-123").expect("encrypt");
+        assert!(envelope.kdf_params.is_some());
+
+        let restored = decrypt_envelope(&envelope, "strong-passphrase-123").expect("decrypt");
+        assert_eq!(restored.created_at, backup.created_at);
+
+        let wrong = decrypt_envelope(&envelope, "wrong-passphrase-999");
+        assert!(wrong.is_err());
+
+        // Legacy v1 envelopes without explicit kdf_params should also decrypt cleanly.
+        let mut legacy = envelope;
+        legacy.kdf_params = None;
+        let legacy_ok = decrypt_envelope(&legacy, "strong-passphrase-123");
+        assert!(legacy_ok.is_ok());
+    }
 }

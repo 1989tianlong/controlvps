@@ -2,18 +2,26 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use keyring::Entry;
 use sha2::{Digest, Sha256};
 use ssh2::{Channel, CheckResult, KnownHostFileKind, Session};
+use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{AuthMethod, ConnectionReport, ConnectionTest, DiagnosticStep, Server};
+use crate::utils;
 
-const KEYCHAIN_SERVICE: &str = "com.controlvps.app";
 const KEEPALIVE_INTERVAL_SECONDS: u32 = 30;
+const DEFAULT_EXEC_TIMEOUT_SECONDS: u64 = 120;
+
+fn known_hosts_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct Credentials {
@@ -73,8 +81,7 @@ pub enum ControlledExecOutput {
 }
 
 pub fn credential_entry(server_id: &str, kind: &str) -> AppResult<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, &format!("{server_id}:{kind}"))
-        .map_err(|error| AppError::Keyring(error.to_string()))
+    utils::secret_entry(&format!("{server_id}:{kind}"))
 }
 
 pub fn save_credentials(server: &Server, input: &crate::models::ServerInput) -> AppResult<()> {
@@ -347,23 +354,41 @@ fn open_tcp_stream(
     label: &str,
     mut trace: Option<&mut ConnectionTrace>,
 ) -> AppResult<TcpStream> {
-    let resolve = || -> AppResult<(std::net::SocketAddr, String)> {
-        let address = (server.host.as_str(), server.port)
+    let resolve = || -> AppResult<(Vec<std::net::SocketAddr>, String)> {
+        let addresses = (server.host.as_str(), server.port)
             .to_socket_addrs()?
-            .next()
+            .take(8)
+            .collect::<Vec<_>>();
+        let first = addresses
+            .first()
             .ok_or_else(|| AppError::Message("无法解析服务器地址".into()))?;
-        Ok((address, address.to_string()))
+        let summary = if addresses.len() > 1 {
+            format!("{first} 等 {} 个地址", addresses.len())
+        } else {
+            first.to_string()
+        };
+        Ok((addresses, summary))
     };
-    let address = match trace.as_deref_mut() {
+    let addresses = match trace.as_deref_mut() {
         Some(trace) => trace.step(format!("{label} · 地址解析"), resolve)?,
         None => resolve()?.0,
     };
     let connect = || -> AppResult<(TcpStream, String)> {
-        let stream = TcpStream::connect_timeout(&address, Duration::from_secs(10))?;
-        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(20)))?;
-        stream.set_nodelay(true)?;
-        Ok((stream, format!("已连接 {address}")))
+        let mut last_error = None;
+        for address in &addresses {
+            match TcpStream::connect_timeout(address, Duration::from_secs(10)) {
+                Ok(stream) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+                    stream.set_write_timeout(Some(Duration::from_secs(20)))?;
+                    stream.set_nodelay(true)?;
+                    return Ok((stream, format!("已连接 {address}")));
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error
+            .map(AppError::from)
+            .unwrap_or_else(|| AppError::Message("无法建立 TCP 连接".into())))
     };
     match trace {
         Some(trace) => trace.step(format!("{label} · TCP 连接"), connect),
@@ -404,7 +429,7 @@ fn connect_on_stream(
         authenticate(&session, server, credentials)?;
         Ok(((), format!("{} 认证通过", auth_label(&server.auth_method))))
     };
-    match trace.as_deref_mut() {
+    match trace {
         Some(trace) => trace.step(format!("{label} · 身份认证"), authenticate)?,
         None => {
             authenticate()?;
@@ -474,56 +499,107 @@ fn auth_label(method: &AuthMethod) -> &'static str {
 
 fn bridge_channel(channel: Channel) -> AppResult<TcpStream> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let client = TcpStream::connect(listener.local_addr()?)?;
-    let (stream, _) = listener.accept()?;
+    let listen_addr = listener.local_addr()?;
+    let client = TcpStream::connect(listen_addr)?;
+    let expected_peer = client.local_addr()?;
+    let mut accepted = None;
+    for _ in 0..8 {
+        let (stream, peer) = listener.accept()?;
+        if peer == expected_peer {
+            accepted = Some(stream);
+            break;
+        }
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    let stream = accepted.ok_or_else(|| AppError::Message("跳板本地桥接握手校验失败".into()))?;
     client.set_nodelay(true)?;
     stream.set_nodelay(true)?;
-    std::thread::spawn(move || relay_jump(channel, stream));
+    stream.set_nonblocking(true)?;
+    std::thread::Builder::new()
+        .name("controlvps-jump-relay".into())
+        .spawn(move || relay_jump(channel, stream))?;
     Ok(client)
 }
 
-fn relay_jump(channel: Channel, stream: TcpStream) {
-    let Ok(mut local_reader) = stream.try_clone() else {
-        return;
-    };
-    let mut local_writer = stream;
-    let mut remote_reader = channel.clone();
-    let mut remote_writer = channel;
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            pump(&mut local_reader, &mut remote_writer);
-        });
-        scope.spawn(|| {
-            pump(&mut remote_reader, &mut local_writer);
-            let _ = local_writer.shutdown(Shutdown::Both);
-        });
-    });
-}
-
-fn pump<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
+/// Multiplexes a single jump channel and its local bridge socket strictly on one thread
+/// so the underlying libssh2 `Session` is never accessed concurrently across threads.
+fn relay_jump(mut channel: Channel, mut stream: TcpStream) {
+    let mut local_to_remote = Vec::new();
+    let mut remote_to_local = Vec::new();
+    let mut local_eof = false;
+    let mut remote_eof = false;
     let mut buffer = [0_u8; 16 * 1024];
+
     loop {
-        let count = match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => count,
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
-            }
-            Err(_) => break,
-        };
-        let mut written = 0;
-        while written < count {
-            match writer.write(&buffer[written..count]) {
-                Ok(0) => return,
-                Ok(count) => written += count,
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2));
+        let mut progressed = false;
+
+        if !local_eof && local_to_remote.len() < 64 * 1024 {
+            match stream.read(&mut buffer) {
+                Ok(0) => {
+                    local_eof = true;
+                    progressed = true;
                 }
-                Err(_) => return,
+                Ok(count) => {
+                    local_to_remote.extend_from_slice(&buffer[..count]);
+                    progressed = true;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
             }
         }
+
+        if !local_to_remote.is_empty() {
+            match channel.write(&local_to_remote) {
+                Ok(0) => break,
+                Ok(count) => {
+                    local_to_remote.drain(..count);
+                    progressed = true;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+        } else if local_eof {
+            let _ = channel.send_eof();
+            break;
+        }
+
+        if !remote_eof && remote_to_local.len() < 64 * 1024 {
+            match channel.read(&mut buffer) {
+                Ok(0) => {
+                    if channel.eof() {
+                        remote_eof = true;
+                        progressed = true;
+                    }
+                }
+                Ok(count) => {
+                    remote_to_local.extend_from_slice(&buffer[..count]);
+                    progressed = true;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+        }
+
+        if !remote_to_local.is_empty() {
+            match stream.write(&remote_to_local) {
+                Ok(0) => break,
+                Ok(count) => {
+                    remote_to_local.drain(..count);
+                    progressed = true;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+        } else if remote_eof {
+            break;
+        }
+
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
+    let _ = stream.shutdown(Shutdown::Both);
+    let _ = channel.close();
 }
 
 fn verify_host_key(
@@ -539,6 +615,9 @@ fn verify_host_key(
         "SHA256:{}",
         base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(key))
     );
+    let _guard = known_hosts_lock()
+        .lock()
+        .map_err(|_| AppError::Message("主机密钥锁不可用".into()))?;
     let mut hosts = session.known_hosts()?;
     if path.exists() {
         hosts.read_file(path, KnownHostFileKind::OpenSSH)?;
@@ -556,7 +635,7 @@ fn verify_host_key(
                 format!("[{}]:{}", server.host, server.port)
             };
             hosts.add(&known_host, key, "ControlVPS", key_type.into())?;
-            hosts.write_file(path, KnownHostFileKind::OpenSSH)?;
+            write_known_hosts_atomic(&hosts, path)?;
             Ok((fingerprint, true))
         }
         CheckResult::NotFound => Err(AppError::UnknownHostKey {
@@ -565,6 +644,26 @@ fn verify_host_key(
         }),
         CheckResult::Failure => Err(AppError::Message("无法验证服务器主机密钥".into())),
     }
+}
+
+fn write_known_hosts_atomic(hosts: &ssh2::KnownHosts, path: &Path) -> AppResult<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let temp = parent.join(format!(".known_hosts.{}.tmp", Uuid::new_v4()));
+    let write_result = (|| -> AppResult<()> {
+        hosts.write_file(&temp, KnownHostFileKind::OpenSSH)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    write_result
 }
 
 fn expand_home(path: &str) -> AppResult<PathBuf> {
@@ -578,18 +677,108 @@ fn expand_home(path: &str) -> AppResult<PathBuf> {
 }
 
 pub fn execute(session: &Session, command: &str) -> AppResult<ExecOutput> {
+    match execute_controlled(
+        session,
+        command,
+        Duration::from_secs(DEFAULT_EXEC_TIMEOUT_SECONDS),
+        &AtomicBool::new(false),
+    )? {
+        ControlledExecOutput::Completed(output) => Ok(output),
+        ControlledExecOutput::TimedOut { .. } => {
+            Err(AppError::Message(format!(
+                "远程命令执行超时（{} 秒）",
+                DEFAULT_EXEC_TIMEOUT_SECONDS
+            )))
+        }
+        ControlledExecOutput::Cancelled { .. } => {
+            Err(AppError::Message("远程命令已取消".into()))
+        }
+    }
+}
+
+pub fn execute_with_stdin(
+    session: &Session,
+    command: &str,
+    stdin_payload: &[u8],
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> AppResult<ControlledExecOutput> {
     let mut channel = session.channel_session()?;
     channel.exec(command)?;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    channel.read_to_string(&mut stdout)?;
-    channel.stderr().read_to_string(&mut stderr)?;
-    channel.wait_close()?;
-    Ok(ExecOutput {
-        stdout,
-        stderr,
-        exit_code: channel.exit_status()?,
-    })
+    session.set_blocking(false);
+    let started = Instant::now();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut input_offset = 0usize;
+    let mut input_eof_sent = false;
+    let result = (|| -> AppResult<ControlledExecOutput> {
+        loop {
+            let mut progressed = false;
+            if !input_eof_sent {
+                if input_offset < stdin_payload.len() {
+                    match channel.write(&stdin_payload[input_offset..]) {
+                        Ok(0) => {
+                            input_eof_sent = true;
+                        }
+                        Ok(written) => {
+                            input_offset += written;
+                            progressed = true;
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                } else {
+                    match channel.send_eof() {
+                        Ok(()) => {
+                            input_eof_sent = true;
+                            progressed = true;
+                        }
+                        Err(error) => {
+                            let io_error = std::io::Error::from(error);
+                            if io_error.kind() != ErrorKind::WouldBlock {
+                                return Err(io_error.into());
+                            }
+                        }
+                    }
+                }
+            }
+            let stdout_len = stdout.len();
+            let stderr_len = stderr.len();
+            let stdout_eof = read_available(&mut channel, &mut stdout)?;
+            let stderr_eof = read_available(&mut channel.stderr(), &mut stderr)?;
+            if stdout.len() != stdout_len || stderr.len() != stderr_len {
+                progressed = true;
+            }
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = channel.close();
+                return Ok(ControlledExecOutput::Cancelled {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                });
+            }
+            if started.elapsed() >= timeout {
+                let _ = channel.close();
+                return Ok(ControlledExecOutput::TimedOut {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                });
+            }
+            if (stdout_eof && stderr_eof) || channel.eof() {
+                session.set_blocking(true);
+                channel.wait_close()?;
+                return Ok(ControlledExecOutput::Completed(ExecOutput {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                    exit_code: channel.exit_status()?,
+                }));
+            }
+            if !progressed {
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        }
+    })();
+    session.set_blocking(true);
+    result
 }
 
 pub fn execute_controlled(
@@ -606,6 +795,8 @@ pub fn execute_controlled(
     let mut stderr = Vec::new();
     let result = (|| -> AppResult<ControlledExecOutput> {
         loop {
+            let stdout_len = stdout.len();
+            let stderr_len = stderr.len();
             let stdout_eof = read_available(&mut channel, &mut stdout)?;
             let stderr_eof = read_available(&mut channel.stderr(), &mut stderr)?;
             if cancelled.load(Ordering::Relaxed) {
@@ -631,7 +822,9 @@ pub fn execute_controlled(
                     exit_code: channel.exit_status()?,
                 }));
             }
-            std::thread::sleep(Duration::from_millis(40));
+            if stdout.len() == stdout_len && stderr.len() == stderr_len {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     })();
     session.set_blocking(true);

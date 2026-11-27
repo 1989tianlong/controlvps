@@ -49,13 +49,14 @@ pub fn get_mcp_status(server: State<'_, McpServer>) -> McpStatus {
 }
 
 #[tauri::command]
-pub fn update_mcp_settings(
+pub async fn update_mcp_settings(
     db: State<'_, Database>,
     server: State<'_, McpServer>,
     input: McpSettingsInput,
 ) -> CommandResult<McpStatus> {
     let settings = db.update_mcp_settings(&input)?;
-    Ok(server.apply(&settings))
+    let server = server.inner().clone();
+    run_blocking(move || Ok(server.apply(&settings))).await
 }
 
 #[tauri::command]
@@ -100,7 +101,7 @@ pub fn get_app_info(paths: State<'_, AppPaths>) -> AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         data_dir: paths.data_dir.display().to_string(),
         known_hosts_path: paths.known_hosts.display().to_string(),
-        credential_store: "macOS Keychain".into(),
+        credential_store: crate::utils::credential_store_label().into(),
     }
 }
 
@@ -308,16 +309,21 @@ pub fn delete_cloud_account(db: State<'_, Database>, id: String) -> CommandResul
 }
 
 #[tauri::command]
-pub fn preview_cloud_assets(db: State<'_, Database>, id: String) -> CommandResult<CloudPreview> {
-    crate::assets::preview(&db, &id).map_err(Into::into)
+pub async fn preview_cloud_assets(
+    db: State<'_, Database>,
+    id: String,
+) -> CommandResult<CloudPreview> {
+    let database = db.inner().clone();
+    run_blocking(move || crate::assets::preview(&database, &id)).await
 }
 
 #[tauri::command]
-pub fn import_cloud_assets(
+pub async fn import_cloud_assets(
     db: State<'_, Database>,
     request: CloudImportRequest,
 ) -> CommandResult<CloudImportResult> {
-    crate::assets::import(&db, &request).map_err(Into::into)
+    let database = db.inner().clone();
+    run_blocking(move || crate::assets::import(&database, &request)).await
 }
 
 #[tauri::command]
@@ -491,19 +497,30 @@ pub fn update_server(
 #[tauri::command]
 pub fn delete_server(
     db: State<'_, Database>,
+    terminals: State<'_, TerminalRegistry>,
     transfers: State<'_, TransferRegistry>,
     tunnels: State<'_, TunnelRegistry>,
     id: String,
 ) -> CommandResult<()> {
     db.ensure_server_deletable(&id)
         .map_err(CommandError::from)?;
-    transfers
-        .cancel_by_server(&id)
-        .map_err(CommandError::from)?;
-    tunnels.stop_by_server(&id).map_err(CommandError::from)?;
-    ssh::delete_credentials(&id).map_err(CommandError::from)?;
-    crate::data_protection::delete_server_secrets(&db, &id);
-    db.delete_server(&id).map_err(Into::into)
+    // Capture policy IDs before DB cascade delete, but only wipe Keychain secrets
+    // AFTER the database deletion succeeds so a failed delete never destroys credentials.
+    let policy_ids: Vec<String> = db
+        .list_data_protection_policies(&id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|policy| policy.id)
+        .collect();
+    db.delete_server(&id).map_err(CommandError::from)?;
+    terminals.close_by_server(&id);
+    let _ = transfers.cancel_by_server(&id);
+    let _ = tunnels.stop_by_server(&id);
+    let _ = ssh::delete_credentials(&id);
+    for policy_id in policy_ids {
+        crate::data_protection::delete_policy_secrets_by_id(&policy_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1201,7 +1218,14 @@ pub fn create_port_forward(
 }
 
 #[tauri::command]
-pub fn delete_port_forward(db: State<'_, Database>, id: String) -> CommandResult<()> {
+pub async fn delete_port_forward(
+    db: State<'_, Database>,
+    tunnels: State<'_, TunnelRegistry>,
+    id: String,
+) -> CommandResult<()> {
+    let registry = tunnels.inner().clone();
+    let stop_id = id.clone();
+    let _ = run_blocking(move || registry.stop(&stop_id)).await;
     db.delete_port_forward(&id).map_err(Into::into)
 }
 
@@ -1236,13 +1260,15 @@ pub async fn start_port_forward(
 }
 
 #[tauri::command]
-pub fn stop_port_forward(
+pub async fn stop_port_forward(
     db: State<'_, Database>,
     tunnels: State<'_, TunnelRegistry>,
     id: String,
 ) -> CommandResult<()> {
     let rule = db.get_port_forward(&id).map_err(CommandError::from)?;
-    let result = tunnels.stop(&id).map_err(CommandError::from);
+    let registry = tunnels.inner().clone();
+    let stop_id = id.clone();
+    let result = run_blocking(move || registry.stop(&stop_id)).await;
     log_operation_result(&db, &rule.server_id, "隧道停止", &result, |_| {
         format!("已停止 {}", rule.name)
     });
@@ -1304,6 +1330,7 @@ pub fn delete_runbook(db: State<'_, Database>, id: String) -> CommandResult<()> 
     db.delete_runbook(&id).map_err(Into::into)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn start_runbook_execution(
     db: State<'_, Database>,
@@ -1642,10 +1669,10 @@ pub fn start_terminal_recording(
         &paths.data_dir,
         &info.server_id,
         &info.server_name,
-        100,
-        32,
+        info.columns,
+        info.rows,
     )
-            .map_err(CommandError::from)?;
+    .map_err(CommandError::from)?;
     if let Err(error) = registry.send(
         &terminal_id,
         TerminalCommand::Record(Some(Box::new(recorder))),
@@ -1667,18 +1694,20 @@ pub fn stop_terminal_recording(
 }
 
 #[tauri::command]
-pub fn list_terminal_recordings(
+pub async fn list_terminal_recordings(
     paths: State<'_, AppPaths>,
 ) -> CommandResult<Vec<RecordingSummary>> {
-    crate::recording::list(&paths.data_dir).map_err(Into::into)
+    let data_dir = paths.data_dir.clone();
+    run_blocking(move || crate::recording::list(&data_dir)).await
 }
 
 #[tauri::command]
-pub fn read_terminal_recording(
+pub async fn read_terminal_recording(
     paths: State<'_, AppPaths>,
     id: String,
 ) -> CommandResult<RecordingDetail> {
-    crate::recording::read(&paths.data_dir, &id).map_err(Into::into)
+    let data_dir = paths.data_dir.clone();
+    run_blocking(move || crate::recording::read(&data_dir, &id)).await
 }
 
 #[tauri::command]
@@ -1859,6 +1888,7 @@ pub async fn download_remote_file(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn enqueue_file_upload(
     db: State<'_, Database>,
@@ -1876,16 +1906,16 @@ pub fn enqueue_file_upload(
         .to_string_lossy()
         .into_owned();
     transfers
-        .enqueue(
-            db.inner().clone(),
-            FileTransferKind::Upload,
+        .enqueue(crate::transfers::TransferEnqueueRequest {
+            db: db.inner().clone(),
+            kind: FileTransferKind::Upload,
             job,
             local_path,
             remote_path,
             file_name,
-            paths.known_hosts.clone(),
+            known_hosts: paths.known_hosts.clone(),
             allow_unknown_host,
-        )
+        })
         .map_err(Into::into)
 }
 
@@ -1907,16 +1937,16 @@ pub fn enqueue_file_download(
         .map_err(CommandError::from)?
         .to_string();
     transfers
-        .enqueue(
-            db.inner().clone(),
-            FileTransferKind::Download,
+        .enqueue(crate::transfers::TransferEnqueueRequest {
+            db: db.inner().clone(),
+            kind: FileTransferKind::Download,
             job,
             local_path,
             remote_path,
             file_name,
-            paths.known_hosts.clone(),
+            known_hosts: paths.known_hosts.clone(),
             allow_unknown_host,
-        )
+        })
         .map_err(Into::into)
 }
 

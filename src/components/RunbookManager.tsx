@@ -49,11 +49,12 @@ export function RunbookManager({ servers, trusted, onAdd }: Props) {
   useEffect(() => {
     setSelectedIds((current) => new Set([...current].filter((id) => servers.some((server) => server.id === id))));
   }, [servers]);
+  const activeExecutionId = execution && ["queued", "running"].includes(execution.status) ? execution.id : undefined;
   useEffect(() => {
-    if (!execution || !["queued", "running"].includes(execution.status)) return;
+    if (!activeExecutionId) return;
     let disposed = false;
     const timer = window.setInterval(() => {
-      void api.runbookExecution(execution.id).then((current) => {
+      void api.runbookExecution(activeExecutionId).then((current) => {
         if (disposed) return;
         setExecution(current);
         if (!["queued", "running"].includes(current.status)) {
@@ -70,7 +71,7 @@ export function RunbookManager({ servers, trusted, onAdd }: Props) {
       });
     }, 800);
     return () => { disposed = true; window.clearInterval(timer); };
-  }, [execution]);
+  }, [activeExecutionId]);
 
   const selected = runbooks.find((runbook) => runbook.id === selectedId);
   const targets = useMemo(() => servers.filter((server) => selectedIds.has(server.id)), [servers, selectedIds]);

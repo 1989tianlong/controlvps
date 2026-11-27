@@ -20,6 +20,12 @@ interface Props {
   onAdd: () => void;
 }
 
+function browserEndpoint(endpoint: string) {
+  if (endpoint.startsWith("0.0.0.0:")) return `127.0.0.1:${endpoint.slice("0.0.0.0:".length)}`;
+  if (endpoint.startsWith("[::]:")) return `[::1]:${endpoint.slice("[::]:".length)}`;
+  return endpoint;
+}
+
 export function TunnelsPage({ servers, trusted, onAdd }: Props) {
   const [rules, setRules] = useState<PortForwardRule[]>([]);
   const [statuses, setStatuses] = useState<TunnelStatus[]>([]);
@@ -126,7 +132,7 @@ export function TunnelsPage({ servers, trusted, onAdd }: Props) {
       {loading ? <div className="skeleton" /> : rules.length === 0 ? <div className="empty"><div><Network size={30} /><h2>还没有转发规则</h2><p>保存一条规则后，可随时启动或停止，无需重复填写端口。</p></div></div> : <div className="table-wrap panel"><table className="data-table"><thead><tr><th>规则</th><th>监听</th><th>目标</th><th>连接</th><th>状态</th><th className="text-right">操作</th></tr></thead><tbody>{rules.map((rule) => {
         const status = statusMap.get(rule.id);
         const server = servers.find((item) => item.id === rule.serverId);
-        return <tr key={rule.id}><td><span className="table-name">{rule.name}</span><span className="table-meta">{rule.kind === "dynamic" ? "动态 SOCKS5" : rule.kind === "remote" ? "远程转发" : "本地转发"} · {server?.name ?? "未知 VPS"}</span></td><td className="measured">{status?.localEndpoint ?? `${rule.listenAddress}:${rule.listenPort}`}</td><td className="measured">{rule.kind === "dynamic" ? "由客户端请求决定" : `${rule.destinationHost}:${rule.destinationPort}`}</td><td>{status ? <span className="table-meta">活动 {status.activeConnections} · 累计 {status.totalConnections}</span> : "—"}</td><td>{status ? <><span className="badge badge-ok">运行中</span><span className="table-meta">{formatTime(status.startedAt)} 启动</span></> : <span className="badge">已停止</span>}</td><td><div className="row-actions">{status && rule.kind === "local" && <button className="icon-btn" type="button" title="作为 HTTP 服务打开" aria-label={`打开 ${rule.name}`} disabled={busy !== ""} onClick={() => void openExternal(`http://${status.localEndpoint}`)}><ExternalLink size={15} /></button>}{status ? <button className="icon-btn" type="button" title="停止隧道" aria-label={`停止 ${rule.name}`} disabled={busy !== ""} onClick={() => void stop(rule)}><Square size={15} /></button> : <button className="icon-btn" type="button" title="启动隧道" aria-label={`启动 ${rule.name}`} disabled={busy !== ""} onClick={() => void start(rule)}><Play size={16} /></button>}<button className="icon-btn" type="button" title="删除规则" aria-label={`删除 ${rule.name}`} disabled={busy !== ""} onClick={() => void remove(rule, Boolean(status))}><Trash2 size={16} /></button></div></td></tr>;
+        return <tr key={rule.id}><td><span className="table-name">{rule.name}</span><span className="table-meta">{rule.kind === "dynamic" ? "动态 SOCKS5" : rule.kind === "remote" ? "远程转发" : "本地转发"} · {server?.name ?? "未知 VPS"}</span></td><td className="measured">{status?.localEndpoint ?? `${rule.listenAddress}:${rule.listenPort}`}</td><td className="measured">{rule.kind === "dynamic" ? "由客户端请求决定" : `${rule.destinationHost}:${rule.destinationPort}`}</td><td>{status ? <span className="table-meta">活动 {status.activeConnections} · 累计 {status.totalConnections}</span> : "—"}</td><td>{status ? <><span className="badge badge-ok">运行中</span><span className="table-meta">{formatTime(status.startedAt)} 启动</span></> : <span className="badge">已停止</span>}</td><td><div className="row-actions">{status && rule.kind === "local" && <button className="icon-btn" type="button" title="作为 HTTP 服务打开" aria-label={`打开 ${rule.name}`} disabled={busy !== ""} onClick={() => void openExternal(`http://${browserEndpoint(status.localEndpoint)}`)}><ExternalLink size={15} /></button>}{status ? <button className="icon-btn" type="button" title="停止隧道" aria-label={`停止 ${rule.name}`} disabled={busy !== ""} onClick={() => void stop(rule)}><Square size={15} /></button> : <button className="icon-btn" type="button" title="启动隧道" aria-label={`启动 ${rule.name}`} disabled={busy !== ""} onClick={() => void start(rule)}><Play size={16} /></button>}<button className="icon-btn" type="button" title="删除规则" aria-label={`删除 ${rule.name}`} disabled={busy !== ""} onClick={() => void remove(rule, Boolean(status))}><Trash2 size={16} /></button></div></td></tr>;
       })}</tbody></table></div>}
     </section>
   </>;

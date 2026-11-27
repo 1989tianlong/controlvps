@@ -102,9 +102,10 @@ struct Runtime {
     error: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct McpServer {
     state: Arc<McpState>,
-    runtime: Mutex<Runtime>,
+    runtime: Arc<Mutex<Runtime>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,7 +148,7 @@ impl McpServer {
         });
         let server = Self {
             state,
-            runtime: Mutex::new(Runtime::default()),
+            runtime: Arc::new(Mutex::new(Runtime::default())),
         };
         if settings.enabled {
             let _ = server.restart();
@@ -200,15 +201,20 @@ impl McpServer {
         }
     }
 
-    fn restart(&self) -> Result<(), String> {
+    pub fn shutdown(&self) {
         self.stop();
+    }
+
+    fn restart(&self) -> Result<(), String> {
         let config = self.state.config();
-        let result = spawn_listener(self.state.clone(), config.port);
         let mut runtime = match self.runtime.lock() {
             Ok(runtime) => runtime,
             Err(error) => error.into_inner(),
         };
-        match result {
+        if let Some(listener) = runtime.listener.take() {
+            listener.shutdown();
+        }
+        match spawn_listener(self.state.clone(), config.port) {
             Ok(listener) => {
                 runtime.listener = Some(listener);
                 runtime.error = None;
@@ -230,6 +236,16 @@ impl McpServer {
         if let Some(listener) = listener {
             listener.shutdown();
         }
+    }
+}
+
+struct ActiveGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -258,8 +274,10 @@ fn spawn_listener(state: Arc<McpState>, port: u16) -> Result<Listener, String> {
                         let spawned = std::thread::Builder::new()
                             .name("controlvps-mcp-call".into())
                             .spawn(move || {
+                                let _guard = ActiveGuard {
+                                    counter: worker_active,
+                                };
                                 let _ = handle_connection(&worker_state, stream);
-                                worker_active.fetch_sub(1, Ordering::Relaxed);
                             });
                         if spawned.is_err() {
                             active.fetch_sub(1, Ordering::Relaxed);
@@ -329,19 +347,32 @@ fn read_request(stream: &mut TcpStream) -> Option<HttpRequest> {
             headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
         }
     }
-    let length = headers
-        .iter()
-        .find(|(name, _)| name == "content-length")
-        .and_then(|(_, value)| value.parse::<usize>().ok())
-        .unwrap_or(0);
+    let mut content_length: Option<usize> = None;
+    for (name, value) in &headers {
+        if name == "content-length" {
+            let parsed = value.parse::<usize>().ok()?;
+            if content_length.is_some_and(|existing| existing != parsed) {
+                return None;
+            }
+            content_length = Some(parsed);
+        }
+    }
+    let length = content_length.unwrap_or(0);
     if length > MAX_BODY_BYTES {
         return None;
+    }
+    if headers
+        .iter()
+        .any(|(name, value)| name == "expect" && value.eq_ignore_ascii_case("100-continue"))
+    {
+        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok()?;
+        stream.flush().ok()?;
     }
     let mut body = buffer[header_end + 4..].to_vec();
     while body.len() < length {
         let count = stream.read(&mut chunk).ok()?;
         if count == 0 {
-            break;
+            return None;
         }
         body.extend_from_slice(&chunk[..count]);
         if body.len() > MAX_BODY_BYTES {
@@ -402,12 +433,12 @@ fn handle_connection(state: &McpState, mut stream: TcpStream) -> std::io::Result
             "MCP 端点为 /mcp".as_bytes(),
         );
     }
-    if !origin_allowed(&request) {
+    if !host_allowed(&request, state.config().port) || !origin_allowed(&request) {
         return write_response(
             &mut stream,
             403,
             "text/plain; charset=utf-8",
-            "来源不被允许".as_bytes(),
+            "来源或 Host 不被允许".as_bytes(),
         );
     }
     if !authorized(state, &request) {
@@ -494,19 +525,33 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     diff == 0
 }
 
+fn host_allowed(request: &HttpRequest, port: u16) -> bool {
+    let Some(host) = request.header("host") else {
+        return true;
+    };
+    let host = host.trim().to_ascii_lowercase();
+    host == "127.0.0.1"
+        || host == "localhost"
+        || host == "[::1]"
+        || host == format!("127.0.0.1:{port}")
+        || host == format!("localhost:{port}")
+        || host == format!("[::1]:{port}")
+}
+
 fn origin_allowed(request: &HttpRequest) -> bool {
     let Some(origin) = request.header("origin") else {
         return true;
     };
     let origin = origin.to_ascii_lowercase();
-    origin == "null"
-        || origin == "tauri://localhost"
+    origin == "tauri://localhost"
         || origin == "http://tauri.localhost"
         || origin == "https://tauri.localhost"
         || origin == "http://127.0.0.1"
         || origin == "http://localhost"
+        || origin == "http://[::1]"
         || origin.starts_with("http://127.0.0.1:")
         || origin.starts_with("http://localhost:")
+        || origin.starts_with("http://[::1]:")
 }
 
 fn handle_payload(state: &McpState, body: &Value) -> (u16, String) {
@@ -1215,10 +1260,11 @@ fn tool_run_command(state: &McpState, args: &Value) -> Result<ToolOutcome, Strin
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let success = exit_code == 0 && !timed_out;
+    let cmd_preview = command_preview(command);
     let summary = if timed_out {
-        format!("执行超时（{timeout} 秒），耗时 {duration_ms} ms")
+        format!("执行超时（{timeout} 秒），耗时 {duration_ms} ms · {cmd_preview}")
     } else {
-        format!("命令退出码 {exit_code}，耗时 {duration_ms} ms")
+        format!("命令退出码 {exit_code}，耗时 {duration_ms} ms · {cmd_preview}")
     };
     let _ = state
         .db
@@ -1252,9 +1298,10 @@ fn tool_run_batch_command(state: &McpState, args: &Value) -> Result<ToolOutcome,
     }
     let result = batch::execute(jobs, command.to_string(), state.known_hosts.clone(), concurrency)
         .map_err(error_text)?;
+    let cmd_preview = command_preview(command);
     for item in &result.results {
         let summary = match item.exit_code {
-            Some(code) => format!("命令退出码 {code}，耗时 {} ms", item.duration_ms),
+            Some(code) => format!("命令退出码 {code}，耗时 {} ms · {cmd_preview}", item.duration_ms),
             None => item.error.clone().unwrap_or_else(|| "连接失败".into()),
         };
         let _ = state
@@ -1263,14 +1310,23 @@ fn tool_run_batch_command(state: &McpState, args: &Value) -> Result<ToolOutcome,
     }
     let payload = serde_json::to_value(&result).map_err(|error| error.to_string())?;
     let summary = format!(
-        "批量命令：成功 {} 台，失败 {} 台，耗时 {} ms",
+        "批量命令：成功 {} 台，失败 {} 台，耗时 {} ms · {cmd_preview}",
         result.success_count, result.failure_count, result.duration_ms
     );
-    Ok(ToolOutcome::ok(
-        format!("{} 台服务器", targets.len()),
-        summary,
-        &payload,
-    ))
+    if result.failure_count > 0 && result.success_count == 0 {
+        Ok(ToolOutcome {
+            text: render(&payload),
+            is_error: true,
+            target: format!("{} 台服务器", targets.len()),
+            summary,
+        })
+    } else {
+        Ok(ToolOutcome::ok(
+            format!("{} 台服务器", targets.len()),
+            summary,
+            &payload,
+        ))
+    }
 }
 
 fn tool_list_systemd(state: &McpState, args: &Value) -> Result<ToolOutcome, String> {
@@ -1547,5 +1603,116 @@ fn resolve_targets(state: &McpState, args: &Value) -> Result<Vec<Server>, String
         return Err("没有选中任何服务器：请提供 servers 列表，或 group / tag 过滤条件".into());
     }
     Ok(unique)
+}
+
+fn command_preview(command: &str) -> String {
+    let single_line: String = command
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let count = single_line.chars().count();
+    if count <= 120 {
+        single_line
+    } else {
+        format!("{}…", single_line.chars().take(120).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req_with_headers(headers: Vec<(&str, &str)>) -> HttpRequest {
+        HttpRequest {
+            method: "POST".into(),
+            path: "/mcp".into(),
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
+                .collect(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn origin_rejects_null_and_external_origins() {
+        assert!(!origin_allowed(&req_with_headers(vec![("origin", "null")])));
+        assert!(!origin_allowed(&req_with_headers(vec![(
+            "origin",
+            "https://evil.example"
+        )])));
+        assert!(origin_allowed(&req_with_headers(vec![(
+            "origin",
+            "http://127.0.0.1:1420"
+        )])));
+        assert!(origin_allowed(&req_with_headers(vec![(
+            "origin",
+            "tauri://localhost"
+        )])));
+        assert!(origin_allowed(&req_with_headers(vec![])));
+    }
+
+    #[test]
+    fn host_rejects_dns_rebinding_hosts() {
+        assert!(!host_allowed(
+            &req_with_headers(vec![("host", "rebind.attacker.com:8799")]),
+            8799
+        ));
+        assert!(!host_allowed(
+            &req_with_headers(vec![("host", "127.0.0.1:9999")]),
+            8799
+        ));
+        assert!(host_allowed(
+            &req_with_headers(vec![("host", "127.0.0.1:8799")]),
+            8799
+        ));
+        assert!(host_allowed(
+            &req_with_headers(vec![("host", "localhost:8799")]),
+            8799
+        ));
+    }
+
+    #[test]
+    fn constant_time_eq_works() {
+        assert!(constant_time_eq("secret-token", "secret-token"));
+        assert!(!constant_time_eq("secret-token", "secret-tokeN"));
+        assert!(!constant_time_eq("short", "longer"));
+    }
+
+    #[test]
+    fn mcp_read_only_blocks_execute_tools() {
+        let db = Database::in_memory().expect("in-memory db");
+        let state = McpState {
+            db,
+            known_hosts: PathBuf::from("/tmp/nonexistent"),
+            registry: RunbookExecutionRegistry::default(),
+            config: Mutex::new(McpConfig {
+                enabled: true,
+                port: 8799,
+                allow_execute: false,
+                allow_unknown_host: false,
+                token: "test-token".into(),
+            }),
+            notify: None,
+        };
+        let resp = handle_message(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_command",
+                    "arguments": { "server": "demo", "command": "id" }
+                }
+            }),
+        )
+        .expect("response");
+        assert_eq!(resp["result"]["isError"], Value::Bool(true));
+        assert!(resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("写操作已关闭"));
+    }
 }
 

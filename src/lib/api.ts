@@ -105,8 +105,7 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri()) {
-    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events"].includes(command)) return [] as T;
-    if (command === "list_mcp_calls") return [] as T;
+    if (["list_servers", "list_operation_logs", "list_snippets", "list_runbooks", "list_runbook_schedules", "list_runbook_executions", "list_data_protection_runs", "list_port_forwards", "list_tunnel_statuses", "list_metric_history", "list_alert_events", "list_active_alerts", "list_service_monitors", "list_service_samples", "list_service_events", "list_cloud_accounts", "list_auth_profiles", "list_server_groups", "list_terminal_recordings", "list_file_transfers", "list_mcp_calls"].includes(command)) return [] as T;
     if (command === "get_mcp_status") {
       return {
         enabled: false,
@@ -138,10 +137,10 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
     }
     if (command === "get_app_info") {
       return {
-        version: "1.5.0",
+        version: "1.10.1",
         dataDir: "桌面应用数据目录",
         knownHostsPath: "桌面应用 known_hosts",
-        credentialStore: "macOS Keychain",
+        credentialStore: "系统钥匙串",
       } as T;
     }
     throw new CommandError({
@@ -340,8 +339,18 @@ export const api = {
 };
 
 export async function openExternal(url: string) {
-  if (inTauri()) await tauriOpenUrl(url);
-  else window.open(url, "_blank", "noopener,noreferrer");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("无效的外部链接地址");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("仅允许打开 http 或 https 链接");
+  }
+  const safeUrl = parsed.toString();
+  if (inTauri()) await tauriOpenUrl(safeUrl);
+  else window.open(safeUrl, "_blank", "noopener,noreferrer");
 }
 
 export function errorMessage(error: unknown) {

@@ -109,7 +109,6 @@ export function FileManager({ server, trusted }: Props) {
       const existing = files.filter((file) => listing.entries.some((entry) => entry.name === file.fileName));
       if (existing.length > 0 && !window.confirm(`远程已存在 ${existing.map((file) => file.fileName).join("、")}，确认在传输完成后覆盖？`)) return;
       setBusy("upload");
-      await trusted(server, (allow) => api.testConnection(server.id, allow));
       for (const file of files) await api.enqueueFileUpload(server.id, file.localPath, listing.path, file.fileName);
       setTransferRevision((value) => value + 1);
       setNotice(`已将 ${files.length} 个文件加入后台传输队列`);
@@ -128,7 +127,6 @@ export function FileManager({ server, trusted }: Props) {
       const localPath = await save({ title: "选择下载位置", defaultPath: selected.name });
       if (!localPath) return;
       setBusy("download");
-      await trusted(server, (allow) => api.testConnection(server.id, allow));
       await api.enqueueFileDownload(server.id, selected.path, localPath);
       setTransferRevision((value) => value + 1);
       setNotice(`已将 ${selected.name} 加入后台传输队列`);

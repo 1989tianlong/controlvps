@@ -66,12 +66,14 @@ pub fn record_success(
         db,
         registry,
         server,
-        AlertKind::Offline,
-        false,
-        None,
-        None,
-        "监控采集已恢复".into(),
-        0,
+        AlertChange {
+            kind: AlertKind::Offline,
+            triggered: false,
+            value: None,
+            threshold: None,
+            message: "监控采集已恢复".into(),
+            cooldown_minutes: 0,
+        },
     )?;
     let settings = db.monitoring_settings()?;
     if !settings.alerts_enabled {
@@ -100,12 +102,14 @@ pub fn record_success(
             db,
             registry,
             server,
-            kind,
-            triggered,
-            Some(value),
-            Some(threshold),
-            message,
-            settings.cooldown_minutes,
+            AlertChange {
+                kind,
+                triggered,
+                value: Some(value),
+                threshold: Some(threshold),
+                message,
+                cooldown_minutes: settings.cooldown_minutes,
+            },
         )?;
     }
     Ok(())
@@ -135,13 +139,24 @@ pub fn record_failure(
         db,
         registry,
         server,
-        AlertKind::Offline,
-        true,
-        Some(f64::from(failures)),
-        Some(f64::from(settings.offline_after)),
-        format!("连续 {failures} 次采集失败，服务器可能离线或不可达。最近错误：{detail}"),
-        settings.cooldown_minutes,
+        AlertChange {
+            kind: AlertKind::Offline,
+            triggered: true,
+            value: Some(f64::from(failures)),
+            threshold: Some(f64::from(settings.offline_after)),
+            message: format!("连续 {failures} 次采集失败，服务器可能离线或不可达。最近错误：{detail}"),
+            cooldown_minutes: settings.cooldown_minutes,
+        },
     )
+}
+
+struct AlertChange {
+    kind: AlertKind,
+    triggered: bool,
+    value: Option<f64>,
+    threshold: Option<f64>,
+    message: String,
+    cooldown_minutes: u32,
 }
 
 fn change(
@@ -149,12 +164,7 @@ fn change(
     db: &Database,
     registry: &AlertRegistry,
     server: &Server,
-    kind: AlertKind,
-    triggered: bool,
-    value: Option<f64>,
-    threshold: Option<f64>,
-    message: String,
-    cooldown_minutes: u32,
+    spec: AlertChange,
 ) -> AppResult<()> {
     enum Action {
         None,
@@ -164,10 +174,10 @@ fn change(
 
     let action = {
         let mut data = registry.data()?;
-        let state = data.states.entry((server.id.clone(), kind)).or_default();
-        if triggered {
+        let state = data.states.entry((server.id.clone(), spec.kind)).or_default();
+        if spec.triggered {
             let cooled_down = state.last_triggered.is_none_or(|time| {
-                time.elapsed() >= Duration::from_secs(u64::from(cooldown_minutes) * 60)
+                time.elapsed() >= Duration::from_secs(u64::from(spec.cooldown_minutes) * 60)
             });
             if state.active && !cooled_down {
                 Action::None
@@ -189,7 +199,14 @@ fn change(
         Action::Trigger => AlertStatus::Triggered,
         Action::Recover => AlertStatus::Recovered,
     };
-    let event = db.record_alert(server, kind, status, message, value, threshold)?;
+    let event = db.record_alert(
+        server,
+        spec.kind,
+        status,
+        spec.message,
+        spec.value,
+        spec.threshold,
+    )?;
     let _ = app.emit("monitoring-alert", event);
     Ok(())
 }

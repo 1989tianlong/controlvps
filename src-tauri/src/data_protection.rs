@@ -13,6 +13,7 @@ use crate::models::{
 };
 use crate::runbook;
 use crate::ssh::{self, SshConnection};
+use crate::utils::{self, shell_quote};
 
 pub fn overview(
     db: &Database,
@@ -68,12 +69,8 @@ pub fn delete_policy(db: &Database, id: &str) -> AppResult<()> {
     Ok(())
 }
 
-pub fn delete_server_secrets(db: &Database, server_id: &str) {
-    if let Ok(policies) = db.list_data_protection_policies(server_id) {
-        for policy in policies {
-            delete_policy_secrets(&policy.id);
-        }
-    }
+pub fn delete_policy_secrets_by_id(id: &str) {
+    delete_policy_secrets(id);
 }
 
 pub fn initialize(
@@ -141,13 +138,16 @@ pub fn backup(
             );
             match context.run(&connection.session, &retention, false) {
                 Ok(forget) => {
-                    output.push_str(&display_output(&forget));
+                    output.push_str(&sanitize(&display_output(&forget), &context.secrets));
                 }
                 Err(error) => {
-                    output.push_str(&format!("\n警告：快照已创建，但旧快照清理失败：{error}"));
+                    output.push_str(&format!(
+                        "\n警告：快照已创建，但旧快照清理失败：{}",
+                        sanitize(&error.to_string(), &context.secrets)
+                    ));
                 }
             }
-            Ok((Some(snapshot_id), output))
+            Ok((Some(snapshot_id), sanitize(&output, &context.secrets)))
         },
     )
 }
@@ -195,6 +195,9 @@ pub fn restore(
     let run =
         db.start_data_protection_run(policy_id, DataProtectionAction::Restore, Some(&target))?;
     let started = Instant::now();
+    let secrets = ResticContext::load(&policy)
+        .map(|ctx| ctx.secrets)
+        .unwrap_or_default();
     let result = (|| -> AppResult<String> {
         let connection = connect(db, &policy.server_id, known_hosts, allow_unknown_host)?;
         let context = ResticContext::load(&policy)?;
@@ -208,7 +211,7 @@ pub fn restore(
             "if [ -e {target} ] || [ -L {target} ]; then printf '恢复目标已存在，拒绝覆盖\\n' >&2; exit 9; fi; mkdir -p -m 700 -- {target}",
             target = shell_quote(&target)
         );
-        run_checked(&connection, &prepare, &[])?;
+        run_checked(&connection, &prepare, &context.secrets)?;
         let output = context.run(
             &connection.session,
             &format!(
@@ -218,7 +221,7 @@ pub fn restore(
             ),
             true,
         )?;
-        Ok(display_output(&output))
+        Ok(sanitize(&display_output(&output), &context.secrets))
     })();
     match result {
         Ok(output) => {
@@ -237,7 +240,7 @@ pub fn restore(
             })
         }
         Err(error) => {
-            let message = sanitize(&error.to_string(), &[]);
+            let message = sanitize(&error.to_string(), &secrets);
             let _ = db.finish_data_protection_run(
                 &run.id,
                 DataProtectionRunStatus::Failed,
@@ -343,7 +346,7 @@ fn create_snapshot(
     let snapshot_id = parse_snapshot_id(&output.stdout).ok_or_else(|| {
         AppError::Message("Restic 未返回快照 ID，请检查输出并核对仓库状态".into())
     })?;
-    Ok((snapshot_id, display_output(&output)))
+    Ok((snapshot_id, sanitize(&display_output(&output), &context.secrets)))
 }
 
 fn database_snapshot(
@@ -352,8 +355,6 @@ fn database_snapshot(
     context: &ResticContext,
     tags: &str,
 ) -> AppResult<ssh::ExecOutput> {
-    let staging = format!("/tmp/controlvps-backup-{}", Uuid::new_v4());
-    let dump = format!("{staging}/database.sql");
     let container = shell_quote(policy.database_container.as_deref().unwrap_or_default());
     let database = shell_quote(policy.database_name.as_deref().unwrap_or_default());
     let user = shell_quote(
@@ -366,50 +367,61 @@ fn database_snapshot(
             }),
     );
     let password = get_secret(&policy.id, "database-password")?;
-    let password_env = password
-        .as_deref()
-        .map(|value| {
-            format!(
-                " -e {} ",
-                shell_quote(&format!(
-                    "{}={value}",
-                    if policy.source_kind == ProtectionSourceKind::Mysql {
-                        "MYSQL_PWD"
-                    } else {
-                        "PGPASSWORD"
-                    }
-                ))
-            )
-        })
-        .unwrap_or_default();
+    let mut secrets = context.secrets.clone();
+    if let Some(pwd) = &password {
+        secrets.push(pwd.clone());
+    }
+    let env_key = if policy.source_kind == ProtectionSourceKind::Mysql {
+        "MYSQL_PWD"
+    } else {
+        "PGPASSWORD"
+    };
+    let mut script = String::new();
+    script.push_str("set -eu\n");
+    script.push_str(&context.export_lines);
+    let env_file_arg = if let Some(pwd) = password.as_deref().filter(|v| !v.is_empty()) {
+        script.push_str("umask 077\n");
+        script.push_str("ENV_FILE=$(mktemp /tmp/controlvps-dbenv-XXXXXX)\n");
+        script.push_str("STATUS_FILE=$(mktemp /tmp/controlvps-dbst-XXXXXX)\n");
+        script.push_str("trap 'rm -f \"$ENV_FILE\" \"$STATUS_FILE\"' EXIT\n");
+        script.push_str(&format!(
+            "printf '%s\\n' {} > \"$ENV_FILE\"\n",
+            shell_quote(&format!("{env_key}={pwd}"))
+        ));
+        " --env-file \"$ENV_FILE\" "
+    } else {
+        script.push_str("umask 077\n");
+        script.push_str("STATUS_FILE=$(mktemp /tmp/controlvps-dbst-XXXXXX)\n");
+        script.push_str("trap 'rm -f \"$STATUS_FILE\"' EXIT\n");
+        " "
+    };
     let dump_command = match policy.source_kind {
         ProtectionSourceKind::Postgresql => format!(
-            "docker exec{password_env}{container} pg_dump -U {user} -d {database} --clean --if-exists"
+            "docker exec{env_file_arg}{container} pg_dump -U {user} -d {database} --clean --if-exists"
         ),
         ProtectionSourceKind::Mysql => format!(
-            "docker exec{password_env}{container} sh -c 'if command -v mysqldump >/dev/null 2>&1; then exec mysqldump \"$@\"; else exec mariadb-dump \"$@\"; fi' sh --single-transaction --quick -u {user} {database}"
+            "docker exec{env_file_arg}{container} sh -c 'if command -v mysqldump >/dev/null 2>&1; then exec mysqldump \"$@\"; else exec mariadb-dump \"$@\"; fi' sh --single-transaction --quick -u {user} {database}"
         ),
         _ => unreachable!(),
     };
-    let command = format!(
-        "set -e; mkdir -m 700 -- {}; {dump_command} > {}; test -s {}",
-        shell_quote(&staging),
-        shell_quote(&dump),
-        shell_quote(&dump)
-    );
-    let secrets = password.iter().cloned().collect::<Vec<_>>();
-    let result = run_checked(connection, &command, &secrets).and_then(|_| {
-        context.run(
-            &connection.session,
-            &format!("backup {tags} -- {}", shell_quote(&dump)),
-            true,
-        )
-    });
-    let _ = ssh::execute(
-        &connection.session,
-        &format!("rm -rf -- {}", shell_quote(&staging)),
-    );
-    result
+    // Stream dump directly into `restic backup --stdin` so unencrypted SQL never hits disk.
+    script.push_str(&format!(
+        "({dump_command}; printf '%s' $? > \"$STATUS_FILE\") | restic --repo {} --json backup {tags} --stdin --stdin-filename database.sql\n",
+        shell_quote(&context.repository)
+    ));
+    script.push_str("DUMP_RC=$(cat \"$STATUS_FILE\")\n");
+    script.push_str("if [ \"${DUMP_RC:-1}\" -ne 0 ]; then printf '数据库转储失败，退出码 %s\\n' \"$DUMP_RC\" >&2; exit \"$DUMP_RC\"; fi\n");
+    let mut script_bytes = script.into_bytes();
+    let result = execute_long_with_stdin(&connection.session, "sh -s", &script_bytes);
+    utils::zeroize_bytes(&mut script_bytes);
+    let output = result?;
+    if output.exit_code != 0 {
+        return Err(AppError::Message(sanitize(
+            &display_output(&output),
+            &secrets,
+        )));
+    }
+    Ok(output)
 }
 
 fn list_snapshots(
@@ -451,7 +463,7 @@ fn connect(
 struct ResticContext {
     repository: String,
     secrets: Vec<String>,
-    environment: String,
+    export_lines: String,
 }
 
 impl ResticContext {
@@ -460,14 +472,14 @@ impl ResticContext {
             AppError::Message("Keychain 中没有 Restic 仓库密码，请编辑策略".into())
         })?;
         let mut secrets = vec![password.clone()];
-        let mut environment = format!("RESTIC_PASSWORD={}", shell_quote(&password));
+        let mut export_lines = format!("export RESTIC_PASSWORD={}\n", shell_quote(&password));
         if policy.repository_kind == ResticRepositoryKind::S3 {
             let access = get_secret(&policy.id, "s3-access-key")?
                 .ok_or_else(|| AppError::Message("Keychain 中没有 S3 Access Key".into()))?;
             let secret = get_secret(&policy.id, "s3-secret-key")?
                 .ok_or_else(|| AppError::Message("Keychain 中没有 S3 Secret Key".into()))?;
-            environment.push_str(&format!(
-                " AWS_ACCESS_KEY_ID={} AWS_SECRET_ACCESS_KEY={}",
+            export_lines.push_str(&format!(
+                "export AWS_ACCESS_KEY_ID={}\nexport AWS_SECRET_ACCESS_KEY={}\n",
                 shell_quote(&access),
                 shell_quote(&secret)
             ));
@@ -476,7 +488,7 @@ impl ResticContext {
         Ok(Self {
             repository: policy.repository.clone(),
             secrets,
-            environment,
+            export_lines,
         })
     }
 
@@ -487,14 +499,18 @@ impl ResticContext {
         json: bool,
     ) -> AppResult<ssh::ExecOutput> {
         let json = if json { " --json" } else { "" };
-        let command = format!(
-            "{} restic --repo {}{} {}",
-            self.environment,
+        // Pass secrets strictly via stdin to `sh -s` so they never appear in remote `ps aux` / `/proc/*/cmdline`.
+        let script = format!(
+            "{}exec restic --repo {}{} {}\n",
+            self.export_lines,
             shell_quote(&self.repository),
             json,
             arguments
         );
-        let output = execute_long(session, &command)?;
+        let mut script_bytes = script.into_bytes();
+        let result = execute_long_with_stdin(session, "sh -s", &script_bytes);
+        utils::zeroize_bytes(&mut script_bytes);
+        let output = result?;
         if output.exit_code != 0 {
             return Err(AppError::Message(sanitize(
                 &display_output(&output),
@@ -502,6 +518,28 @@ impl ResticContext {
             )));
         }
         Ok(output)
+    }
+}
+
+fn execute_long_with_stdin(
+    session: &ssh2::Session,
+    command: &str,
+    stdin_payload: &[u8],
+) -> AppResult<ssh::ExecOutput> {
+    match ssh::execute_with_stdin(
+        session,
+        command,
+        stdin_payload,
+        Duration::from_secs(86_400),
+        &AtomicBool::new(false),
+    )? {
+        ssh::ControlledExecOutput::Completed(output) => Ok(output),
+        ssh::ControlledExecOutput::TimedOut { .. } => {
+            Err(AppError::Message("远程数据保护命令超过 24 小时".into()))
+        }
+        ssh::ControlledExecOutput::Cancelled { .. } => {
+            Err(AppError::Message("远程数据保护命令已取消".into()))
+        }
     }
 }
 
@@ -587,10 +625,6 @@ fn source_name(kind: ProtectionSourceKind) -> &'static str {
         ProtectionSourceKind::Postgresql => "postgresql",
         ProtectionSourceKind::Mysql => "mysql",
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn save_secrets(id: &str, input: &DataProtectionInput) -> AppResult<()> {

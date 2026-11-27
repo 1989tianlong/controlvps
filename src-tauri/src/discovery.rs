@@ -1,6 +1,7 @@
 use std::collections::HashSet;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::io::Read;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use regex::Regex;
@@ -8,6 +9,14 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
+
+const DEAL_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_FEED_BYTES: u64 = 4 * 1024 * 1024;
+
+fn deal_cache() -> &'static Mutex<Option<(Instant, DealFeed)>> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, DealFeed)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
 
 struct FeedDefinition {
     id: &'static str,
@@ -308,6 +317,13 @@ fn patterns() -> &'static Patterns {
 }
 
 pub fn fetch_deals() -> AppResult<DealFeed> {
+    if let Ok(guard) = deal_cache().lock() {
+        if let Some((fetched_at, feed)) = guard.as_ref() {
+            if fetched_at.elapsed() < DEAL_CACHE_TTL {
+                return Ok(feed.clone());
+            }
+        }
+    }
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(8))
@@ -357,11 +373,15 @@ pub fn fetch_deals() -> AppResult<DealFeed> {
     }
 
     deals.sort_by(|a, b| b.published_at.cmp(&a.published_at));
-    Ok(DealFeed {
+    let feed = DealFeed {
         fetched_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         sources,
         deals,
-    })
+    };
+    if let Ok(mut guard) = deal_cache().lock() {
+        *guard = Some((Instant::now(), feed.clone()));
+    }
+    Ok(feed)
 }
 
 fn fetch_feed(
@@ -380,9 +400,12 @@ fn fetch_feed(
             response.status().as_u16()
         ));
     }
-    let body = response
-        .text()
+    let mut raw_bytes = Vec::new();
+    response
+        .take(MAX_FEED_BYTES)
+        .read_to_end(&mut raw_bytes)
         .map_err(|error| format!("{} 内容读取失败：{error}", feed.name))?;
+    let body = String::from_utf8_lossy(&raw_bytes);
 
     let mut items = Vec::new();
     for raw in feed_items(&body).into_iter().take(60) {
@@ -438,7 +461,10 @@ fn parse_item(feed: &FeedDefinition, item: &str) -> Option<Deal> {
         return None;
     }
     let link = cdata(tag_text(item, "link")?).to_string();
-    if !link.starts_with("http") {
+    let Ok(parsed_link) = reqwest::Url::parse(&link) else {
+        return None;
+    };
+    if !matches!(parsed_link.scheme(), "http" | "https") {
         return None;
     }
     let published_at = tag_text(item, "pubDate")
@@ -511,8 +537,7 @@ fn parse_price(text: &str) -> Option<DealPrice> {
         } else {
             count
         };
-        let currency = if text.contains('€') { "EUR" } else { "USD" };
-        consider(build_price(amount, currency, months));
+        consider(build_price(amount, "USD", months));
     }
     best
 }
@@ -777,4 +802,33 @@ fn short_hash(value: &str) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:014x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_price_does_not_mislabel_usd_bundle_as_eur() {
+        let text = "Special offer: $24 for 2 years! Normally €10/mo in Germany.";
+        let price = parse_price(text).expect("price parsed");
+        assert_eq!(price.currency, "USD");
+        assert_eq!(price.billing_months, 24.0);
+        assert_eq!(price.monthly_equivalent, 1.0);
+    }
+
+    #[test]
+    fn parse_item_rejects_non_http_schemes() {
+        let feed = &FEEDS[0];
+        let bad = "<title>Promo</title><link>javascript:alert(1)</link>";
+        assert!(parse_item(feed, bad).is_none());
+        let bad2 = "<title>Promo</title><link>httpfoo://bar</link>";
+        assert!(parse_item(feed, bad2).is_none());
+        let good = "<title>RackNerd 2GB RAM</title><link>https://lowendbox.com/blog/test/</link><description>2GB RAM 30GB NVMe $18/yr in Los Angeles</description>";
+        let deal = parse_item(feed, good).expect("valid deal");
+        assert_eq!(deal.provider.as_deref(), Some("RackNerd"));
+        assert_eq!(deal.memory_gb, Some(2.0));
+        assert_eq!(deal.disk_gb, Some(30.0));
+        assert!(deal.locations.contains(&"洛杉矶".to_string()));
+    }
 }

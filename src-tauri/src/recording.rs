@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
-const MAX_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RECORDING_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PLAYBACK_BYTES: u64 = MAX_RECORDING_BYTES as u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,7 +68,7 @@ impl Recorder {
         fs::create_dir_all(&dir)?;
         let id = Uuid::new_v4().to_string();
         let path = dir.join(format!("{id}.cast"));
-        let mut file = BufWriter::new(File::create(&path)?);
+        let mut file = BufWriter::new(create_private_file(&path)?);
         let started_at = Utc::now();
         let header = serde_json::json!({
             "version": 2,
@@ -100,21 +100,20 @@ impl Recorder {
         ))
     }
 
-    pub fn write(&mut self, kind: &str, data: &[u8]) -> bool {
-        if data.is_empty() {
+    pub fn write_text(&mut self, kind: &str, text: &str) -> bool {
+        if text.is_empty() {
             return false;
         }
         if self.limit_hit {
             return true;
         }
-        if self.bytes + data.len() > MAX_RECORDING_BYTES {
-            self.limit_hit = true;
-            return true;
-        }
-        let text = String::from_utf8_lossy(data);
         let time = self.started.elapsed().as_secs_f64();
         let line = serde_json::json!([time, kind, text]);
         let rendered = line.to_string();
+        if self.bytes + rendered.len() + 1 > MAX_RECORDING_BYTES {
+            self.limit_hit = true;
+            return true;
+        }
         if writeln!(self.file, "{rendered}").is_ok() {
             self.frames += 1;
             self.bytes += rendered.len() + 1;
@@ -125,7 +124,7 @@ impl Recorder {
     pub fn resize(&mut self, columns: u32, rows: u32) {
         self.width = columns.max(20);
         self.height = rows.max(5);
-        let _ = self.write("r", format!("{}x{}", self.width, self.height).as_bytes());
+        let _ = self.write_text("r", &format!("{}x{}", self.width, self.height));
     }
 
     pub fn finish(mut self) -> AppResult<()> {
@@ -143,10 +142,23 @@ impl Recorder {
             width: self.width,
             height: self.height,
         };
-        let meta = serde_json::to_vec_pretty(&summary).map_err(|error| AppError::Message(error.to_string()))?;
-        fs::write(self.dir.join(format!("{}.meta.json", self.id)), meta)?;
+        let meta = serde_json::to_vec_pretty(&summary)
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        let mut meta_file = create_private_file(&self.dir.join(format!("{}.meta.json", self.id)))?;
+        meta_file.write_all(&meta)?;
         Ok(())
     }
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 pub fn directory(data_dir: &Path) -> PathBuf {
@@ -165,57 +177,73 @@ pub fn list(data_dir: &Path) -> AppResult<Vec<RecordingSummary>> {
         if path.extension().and_then(|value| value.to_str()) != Some("cast") {
             continue;
         }
-        let Some(id) = path.file_stem().and_then(|value| value.to_str()).map(str::to_string) else {
+        let Some(id) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+        else {
             continue;
         };
-        let meta_path = dir.join(format!("{id}.meta.json"));
-        let mut summary = match fs::read(&meta_path)
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<RecordingSummary>(&raw).ok())
-        {
-            Some(summary) => summary,
-            None => {
-                let size = entry.metadata().map(|item| item.len()).unwrap_or(0);
-                let started = entry
-                    .metadata()
-                    .and_then(|item| item.modified())
-                    .ok()
-                    .and_then(|value| value.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map(|value| value.as_secs())
-                    .unwrap_or(0);
-                RecordingSummary {
-                    id: id.clone(),
-                    server_id: String::new(),
-                    server_name: "未完成的录制".into(),
-                    started_at: DateTime::<Utc>::from_timestamp(started as i64, 0)
-                        .unwrap_or_else(Utc::now)
-                        .to_rfc3339_opts(SecondsFormat::Secs, true),
-                    duration_seconds: 0.0,
-                    size_bytes: size,
-                    frames: 0,
-                    width: 100,
-                    height: 32,
-                }
-            }
-        };
-        if summary.frames == 0 {
-            if let Ok((frames, duration)) = scan(&path) {
-                summary.frames = frames;
-                summary.duration_seconds = duration;
-            }
-        }
-        summary.size_bytes = entry.metadata().map(|item| item.len()).unwrap_or(summary.size_bytes);
-        summaries.push(summary);
+        let size = entry.metadata().map(|item| item.len()).unwrap_or(0);
+        let modified = entry
+            .metadata()
+            .and_then(|item| item.modified())
+            .ok();
+        summaries.push(load_summary(&dir, &id, &path, size, modified));
     }
     summaries.sort_by(|a, b| b.started_at.cmp(&a.started_at));
     Ok(summaries)
 }
 
+fn load_summary(
+    dir: &Path,
+    id: &str,
+    cast_path: &Path,
+    size: u64,
+    modified: Option<SystemTime>,
+) -> RecordingSummary {
+    let meta_path = dir.join(format!("{id}.meta.json"));
+    let mut summary = match fs::read(&meta_path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<RecordingSummary>(&raw).ok())
+    {
+        Some(summary) => summary,
+        None => {
+            let started = modified
+                .and_then(|value| value.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|value| value.as_secs())
+                .unwrap_or(0);
+            RecordingSummary {
+                id: id.to_string(),
+                server_id: String::new(),
+                server_name: "未完成的录制".into(),
+                started_at: DateTime::<Utc>::from_timestamp(started as i64, 0)
+                    .unwrap_or_else(Utc::now)
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+                duration_seconds: 0.0,
+                size_bytes: size,
+                frames: 0,
+                width: 100,
+                height: 32,
+            }
+        }
+    };
+    if summary.frames == 0 && size <= MAX_PLAYBACK_BYTES {
+        if let Ok((frames, duration)) = scan(cast_path) {
+            summary.frames = frames;
+            summary.duration_seconds = duration;
+        }
+    }
+    summary.size_bytes = size;
+    summary
+}
+
 pub fn read(data_dir: &Path, id: &str) -> AppResult<RecordingDetail> {
     let path = recording_path(data_dir, id)?;
     let file = File::open(&path)?;
-    let size = file.metadata().map(|item| item.len()).unwrap_or(0);
-    if size > MAX_SCAN_BYTES {
+    let metadata = file.metadata()?;
+    let size = metadata.len();
+    if size > MAX_PLAYBACK_BYTES {
         return Err(AppError::Message("录制文件过大，无法在应用内回放".into()));
     }
     let reader = BufReader::new(file);
@@ -245,10 +273,14 @@ pub fn read(data_dir: &Path, id: &str) -> AppResult<RecordingDetail> {
             data: items[2].as_str().unwrap_or_default().to_string(),
         });
     }
-    let mut summary = list(data_dir)?
-        .into_iter()
-        .find(|item| item.id == id)
-        .ok_or_else(|| AppError::Message("未找到这段录制".into()))?;
+    let dir = directory(data_dir);
+    let mut summary = load_summary(&dir, id, &path, size, metadata.modified().ok());
+    summary.frames = frames.len();
+    if let Some(last) = frames.last() {
+        if summary.duration_seconds <= 0.0 {
+            summary.duration_seconds = last.time;
+        }
+    }
     summary.width = header
         .get("width")
         .and_then(|value| value.as_u64())
@@ -260,7 +292,7 @@ pub fn read(data_dir: &Path, id: &str) -> AppResult<RecordingDetail> {
         .map(|value| value as u32)
         .unwrap_or(summary.height);
     if let Some(title) = header.get("title").and_then(|value| value.as_str()) {
-        if summary.server_name.is_empty() {
+        if summary.server_name.is_empty() || summary.server_name == "未完成的录制" {
             summary.server_name = title.to_string();
         }
     }

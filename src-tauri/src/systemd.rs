@@ -7,6 +7,7 @@ use crate::models::{
     SystemdAction, SystemdActionResult, SystemdLogs, SystemdOverview, SystemdService,
 };
 use crate::ssh::{self, ExecOutput};
+use crate::utils::{combined_output, shell_quote};
 
 pub fn list(session: &Session) -> AppResult<SystemdOverview> {
     let version = execute_checked(session, "systemctl --version")?;
@@ -76,7 +77,10 @@ pub fn action(
         SystemdAction::Stop => "stop",
         SystemdAction::Restart => "restart",
     };
-    let output = execute_checked(session, &format!("systemctl {action_name} -- {unit}"))?;
+    let output = execute_checked(
+        session,
+        &format!("systemctl {action_name} -- {}", shell_quote(unit)),
+    )?;
     Ok(SystemdActionResult {
         unit: unit.to_string(),
         action,
@@ -89,7 +93,10 @@ pub fn logs(session: &Session, unit: &str) -> AppResult<SystemdLogs> {
     validate_unit(unit)?;
     let output = execute_checked(
         session,
-        &format!("journalctl -u {unit} -n 200 --no-pager --output=short-iso"),
+        &format!(
+            "journalctl -u {} -n 200 --no-pager --output=short-iso",
+            shell_quote(unit)
+        ),
     )?;
     Ok(SystemdLogs {
         unit: unit.to_string(),
@@ -154,12 +161,4 @@ fn validate_unit(unit: &str) -> AppResult<()> {
         return Err(AppError::Message("systemd 服务名称无效".into()));
     }
     Ok(())
-}
-
-fn combined_output(output: &ExecOutput) -> String {
-    let mut text = output.stdout.clone();
-    if !output.stderr.trim().is_empty() {
-        text.push_str(&output.stderr);
-    }
-    text
 }

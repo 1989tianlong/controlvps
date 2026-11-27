@@ -1,11 +1,10 @@
 use std::collections::HashSet;
 use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use keyring::Entry;
 use native_tls::TlsConnector;
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
@@ -19,9 +18,27 @@ use crate::models::{
     ServiceCheckResult, ServiceEvent, ServiceMonitor, ServiceMonitorInput, ServiceMonitorKind,
     ServiceNotificationInput, ServiceNotificationSettings, ServiceProbe,
 };
+use crate::utils;
 
 const WEBHOOK_ACCOUNT: &str = "service-notifications:webhook-url";
 const MAX_HTTP_BODY_BYTES: u64 = 256 * 1024;
+
+fn shared_webhook_client() -> AppResult<&'static Client> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    let result = CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(Policy::none())
+            .user_agent(concat!("ControlVPS/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|error| format!("无法初始化 Webhook 客户端：{error}"))
+    });
+    match result {
+        Ok(client) => Ok(client),
+        Err(message) => Err(AppError::Message(message.clone())),
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct ServiceMonitorRegistry {
@@ -254,11 +271,29 @@ fn probe_dns(monitor: &ServiceMonitor) -> ServiceProbe {
 
 fn certificate_info(host: &str, port: u16, timeout_seconds: u32) -> AppResult<(String, i32)> {
     let timeout = Duration::from_secs(u64::from(timeout_seconds));
-    let address = (host, port)
+    let addresses = (host, port)
         .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| AppError::Message("证书主机没有可连接地址".into()))?;
-    let stream = TcpStream::connect_timeout(&address, timeout)?;
+        .take(6)
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(AppError::Message("证书主机没有可连接地址".into()));
+    }
+    let mut stream = None;
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(connected) => {
+                stream = Some(connected);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let stream = stream.ok_or_else(|| {
+        last_error
+            .map(AppError::from)
+            .unwrap_or_else(|| AppError::Message("无法连接证书主机".into()))
+    })?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let connector = TlsConnector::builder()
@@ -400,9 +435,7 @@ pub fn save_notification_settings(
         .filter(|value| !value.is_empty())
     {
         validate_webhook_url(url)?;
-        webhook_entry()?
-            .set_password(url)
-            .map_err(|error| AppError::Keyring(error.to_string()))?;
+        utils::set_secret(WEBHOOK_ACCOUNT, url)?;
     }
     let has_url = webhook_url()?.is_some();
     if input.enabled && !has_url {
@@ -430,34 +463,20 @@ pub fn test_webhook(_db: &Database) -> AppResult<()> {
 }
 
 pub fn webhook_url() -> AppResult<Option<String>> {
-    match webhook_entry()?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(AppError::Keyring(error.to_string())),
-    }
+    utils::get_secret(WEBHOOK_ACCOUNT)
 }
 
 pub fn restore_webhook(db: &Database, enabled: bool, url: Option<&str>) -> AppResult<()> {
     if let Some(url) = url {
         validate_webhook_url(url)?;
-        webhook_entry()?
-            .set_password(url)
-            .map_err(|error| AppError::Keyring(error.to_string()))?;
+        utils::set_secret(WEBHOOK_ACCOUNT, url)?;
     }
     let effective = enabled && webhook_url()?.is_some();
     db.update_service_webhook_enabled(effective)
 }
 
 fn delete_webhook_url() -> AppResult<()> {
-    match webhook_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(AppError::Keyring(error.to_string())),
-    }
-}
-
-fn webhook_entry() -> AppResult<Entry> {
-    Entry::new("com.controlvps.app", WEBHOOK_ACCOUNT)
-        .map_err(|error| AppError::Keyring(error.to_string()))
+    utils::delete_secret(WEBHOOK_ACCOUNT)
 }
 
 fn send_event(db: &Database, event: &ServiceEvent) -> AppResult<()> {
@@ -484,13 +503,7 @@ fn send_event(db: &Database, event: &ServiceEvent) -> AppResult<()> {
 
 fn post_webhook(url: &str, payload: serde_json::Value) -> AppResult<()> {
     validate_webhook_url(url)?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .connect_timeout(Duration::from_secs(10))
-        .redirect(Policy::none())
-        .user_agent(concat!("ControlVPS/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|error| AppError::Message(format!("无法初始化 Webhook 客户端：{error}")))?;
+    let client = shared_webhook_client()?;
     let response = client
         .post(url)
         .header("Content-Type", "application/json")

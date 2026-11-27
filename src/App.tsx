@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Activity, Bot, Cloud, Compass, Gift, LayoutDashboard, ListChecks, LockKeyhole, Menu, MonitorPlay, Network, Plus, ScrollText, Server as ServerIcon, Settings, ShieldCheck, TerminalSquare, X } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "./lib/api";
@@ -9,21 +9,23 @@ import { useServiceMonitoring } from "./hooks/useServiceMonitoring";
 import { sendSystemNotification } from "./lib/notifications";
 import { ServerForm } from "./components/ServerForm";
 import { OverviewPage } from "./components/OverviewPage";
-import { ServersPage } from "./components/ServersPage";
-import { AssetsPage } from "./components/AssetsPage";
-import { DiscoveryPage } from "./components/DiscoveryPage";
-import { FreePage } from "./components/FreePage";
-import { ActivityPage } from "./components/ActivityPage";
-import { SettingsPage } from "./components/SettingsPage";
-import { AutomationPage } from "./components/AutomationPage";
-import { TunnelsPage } from "./components/TunnelsPage";
-import { MonitoringPage } from "./components/MonitoringPage";
-import { SecurityCenter } from "./components/SecurityCenter";
-import { TerminalWorkspace, type TerminalRequest } from "./components/TerminalWorkspace";
-import { RecordingsPage } from "./components/RecordingsPage";
-import { McpPage } from "./components/McpPage";
+import type { TerminalRequest } from "./components/TerminalWorkspace";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useAppUpdate } from "./hooks/useAppUpdate";
+
+const ServersPage = lazy(() => import("./components/ServersPage").then((m) => ({ default: m.ServersPage })));
+const AssetsPage = lazy(() => import("./components/AssetsPage").then((m) => ({ default: m.AssetsPage })));
+const DiscoveryPage = lazy(() => import("./components/DiscoveryPage").then((m) => ({ default: m.DiscoveryPage })));
+const FreePage = lazy(() => import("./components/FreePage").then((m) => ({ default: m.FreePage })));
+const ActivityPage = lazy(() => import("./components/ActivityPage").then((m) => ({ default: m.ActivityPage })));
+const SettingsPage = lazy(() => import("./components/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+const AutomationPage = lazy(() => import("./components/AutomationPage").then((m) => ({ default: m.AutomationPage })));
+const TunnelsPage = lazy(() => import("./components/TunnelsPage").then((m) => ({ default: m.TunnelsPage })));
+const MonitoringPage = lazy(() => import("./components/MonitoringPage").then((m) => ({ default: m.MonitoringPage })));
+const SecurityCenter = lazy(() => import("./components/SecurityCenter").then((m) => ({ default: m.SecurityCenter })));
+const TerminalWorkspace = lazy(() => import("./components/TerminalWorkspace").then((m) => ({ default: m.TerminalWorkspace })));
+const RecordingsPage = lazy(() => import("./components/RecordingsPage").then((m) => ({ default: m.RecordingsPage })));
+const McpPage = lazy(() => import("./components/McpPage").then((m) => ({ default: m.McpPage })));
 
 const pages = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
@@ -51,6 +53,7 @@ function pageFromHash(): Page {
 
 export default function App() {
   const [page, setPage] = useState<Page>(pageFromHash);
+  const [terminalVisited, setTerminalVisited] = useState(() => pageFromHash() === "terminal");
   const [menuOpen, setMenuOpen] = useState(false);
   const [servers, setServers] = useState<Server[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ServerMetrics>>({});
@@ -104,6 +107,10 @@ export default function App() {
     };
   }, [monitoringSettings?.notificationsEnabled]);
 
+  useEffect(() => {
+    if (page === "terminal") setTerminalVisited(true);
+  }, [page]);
+
   const navigate = (target: Page) => {
     window.location.hash = `/${target}`;
     setPage(target);
@@ -128,7 +135,7 @@ export default function App() {
       <div className="brand"><span className="brand-mark"><TerminalSquare size={19} /></span><span>ControlVPS</span></div>
       <nav className="sidebar-nav" aria-label="主导航">{pages.map((item) => <button className="nav-item" type="button" key={item.id} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate(item.id)}><item.icon size={18} /><span>{item.label}</span></button>)}</nav>
       <button className="btn btn-primary mt-6" type="button" onClick={add}><Plus size={16} />添加 VPS</button>
-      <div className="sidebar-foot"><LockKeyhole size={17} /><p>本地优先，凭据由 macOS Keychain 保护。</p></div>
+      <div className="sidebar-foot"><LockKeyhole size={17} /><p>本地优先，凭据由系统钥匙串保护。</p></div>
     </aside>
     <main className="main-column">
       <header className="topbar"><div className="flex items-center gap-3"><button className="icon-btn menu-button" type="button" aria-label={menuOpen ? "关闭导航" : "打开导航"} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={19} /> : <Menu size={19} />}</button><span className="topbar-title">{pages.find((item) => item.id === page)?.label}</span></div><span className="local-label">{collecting || serviceMonitoring.checkingIds.length > 0 ? <Activity size={14} /> : <LockKeyhole size={14} />}{collecting || serviceMonitoring.checkingIds.length > 0 ? "正在采集监控" : "本地工作区"}</span></header>
@@ -136,19 +143,21 @@ export default function App() {
         <UpdateBanner state={appUpdate.state} dismissed={appUpdate.dismissed} onInstall={() => void appUpdate.install()} onRestart={() => void appUpdate.restart()} onDismiss={appUpdate.dismiss} />
         {error && <div className="error-banner" role="alert"><p>{error}</p><button className="btn" type="button" onClick={loadServers}>重试</button></div>}
         {page === "overview" && <OverviewPage servers={servers} loading={loading} metrics={metrics} onAdd={add} onServers={() => navigate("servers")} onDiscover={() => navigate("discover")} />}
-        {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
-        {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}
-        {page === "security" && <SecurityCenter servers={servers} trusted={execute} onAdd={add} onOpenRunbooks={() => { setAutomationMode("runbooks"); navigate("automation"); }} />}
-        {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} requestedMode={automationMode} />}
-        {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
-        <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>
-        {page === "recordings" && <RecordingsPage />}
-        {page === "assets" && <AssetsPage servers={servers} onChanged={loadServers} />}
-        {page === "discover" && <DiscoveryPage />}
-        {page === "free" && <FreePage />}
-        {page === "activity" && <ActivityPage />}
-        {page === "mcp" && <McpPage />}
-        {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} appUpdate={appUpdate} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
+        <Suspense fallback={<div className="skeleton" />}>
+          {page === "servers" && <ServersPage servers={servers} loading={loading} metrics={metrics} onMetrics={updateMetrics} onAdd={add} onEdit={edit} onChanged={loadServers} onOpenTerminal={openTerminal} trusted={execute} />}
+          {page === "monitoring" && <MonitoringPage servers={servers} metrics={metrics} errors={monitorErrors} settings={monitoringSettings} trusted={execute} onMetrics={updateMetrics} onSettings={() => navigate("settings")} serviceMonitoring={serviceMonitoring} />}
+          {page === "security" && <SecurityCenter servers={servers} trusted={execute} onAdd={add} onOpenRunbooks={() => { setAutomationMode("runbooks"); navigate("automation"); }} />}
+          {page === "automation" && <AutomationPage servers={servers} trusted={execute} onAdd={add} requestedMode={automationMode} />}
+          {page === "tunnels" && <TunnelsPage servers={servers} trusted={execute} onAdd={add} />}
+          {terminalVisited && <div hidden={page !== "terminal"}><TerminalWorkspace servers={servers} trusted={execute} request={terminalRequest} /></div>}
+          {page === "recordings" && <RecordingsPage />}
+          {page === "assets" && <AssetsPage servers={servers} onChanged={loadServers} />}
+          {page === "discover" && <DiscoveryPage />}
+          {page === "free" && <FreePage />}
+          {page === "activity" && <ActivityPage />}
+          {page === "mcp" && <McpPage />}
+          {page === "settings" && <SettingsPage settings={monitoringSettings} onSettingsChange={setMonitoringSettings} appUpdate={appUpdate} onWorkspaceRestored={() => { void loadServers(); void serviceMonitoring.refresh(); void api.monitoringSettings().then(setMonitoringSettings).catch(() => undefined); }} />}
+        </Suspense>
       </div>
     </main>
     <ServerForm server={editing} servers={servers} open={formOpen} onClose={() => setFormOpen(false)} onSaved={saved} />

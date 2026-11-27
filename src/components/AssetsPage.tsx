@@ -62,7 +62,7 @@ export function AssetsPage({ servers, onChanged }: Props) {
       });
       form.reset();
       await load();
-      setNotice("云账户已保存，访问令牌只写入 macOS Keychain。");
+      setNotice("云账户已保存，访问令牌只写入系统钥匙串。");
     });
   };
 
@@ -128,7 +128,7 @@ export function AssetsPage({ servers, onChanged }: Props) {
   };
 
   return <>
-    <div className="page-heading"><div><h1>云资产</h1><p>只读同步 DigitalOcean 和 Tailscale，导入前先核对差异。令牌保存在 macOS Keychain。</p></div></div>
+    <div className="page-heading"><div><h1>云资产</h1><p>只读同步 DigitalOcean 和 Tailscale，导入前先核对差异。令牌保存在系统钥匙串。</p></div></div>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {notice && <div className="panel panel-body mb-6" role="status">{notice}</div>}
     <div className="split-layout">
@@ -148,9 +148,11 @@ export function AssetsPage({ servers, onChanged }: Props) {
           <input className="input" name="name" required placeholder="认证身份名称" aria-label="认证身份名称" />
           <select className="select" name="authMethod" aria-label="认证方式"><option value="key">SSH 私钥</option><option value="agent">SSH Agent</option><option value="password">密码</option></select>
           <input className="input" name="privateKeyPath" placeholder="私钥路径，例如 ~/.ssh/id_ed25519" aria-label="私钥路径" />
-          <input className="input" name="password" type="password" autoComplete="off" placeholder="密码（可选）" aria-label="共享密码" />
+          <input className="input" name="keyPassphrase" type="password" autoComplete="off" placeholder="私钥密码（可选）" aria-label="私钥密码" />
+          <input className="input" name="password" type="password" autoComplete="off" placeholder="SSH 密码（可选）" aria-label="共享密码" />
           <button className="btn" type="submit" disabled={busy === "profile"}>保存认证身份</button>
         </form>
+        {profiles.length > 0 && <div className="stack mt-4">{profiles.map((profile) => <div className="list-row" key={profile.id}><div><strong>{profile.name}</strong><span className="table-meta">{profile.authMethod === "key" ? `私钥 ${profile.privateKeyPath || "未填路径"}${profile.hasKeyPassphrase ? " · 已设口令" : ""}` : profile.authMethod === "password" ? `密码${profile.hasPassword ? " · 已保存" : ""}` : "SSH Agent"}</span></div><button className="icon-btn" type="button" aria-label={`删除认证身份 ${profile.name}`} onClick={() => { if (!window.confirm(`确认删除认证身份 ${profile.name}？关联服务器将不再使用此身份。`)) return; void run(profile.id, async () => { await api.deleteAuthProfile(profile.id); await load(); setNotice(`认证身份 ${profile.name} 已删除。`); }); }}><Trash2 size={16} /></button></div>)}</div>}
         <form className="stack mt-6" onSubmit={saveGroup}>
           <input className="input" name="name" required placeholder="分组名称" aria-label="分组名称" />
           <select className="select" name="jumpServerId" aria-label="默认跳板机"><option value="">不使用默认跳板机</option>{servers.filter((server) => !server.jumpServerId).map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select>

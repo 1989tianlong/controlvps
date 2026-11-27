@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -201,9 +201,11 @@ pub fn connection_job(db: &Database, id: &str) -> AppResult<ConnectionJob> {
     apply_group_defaults(db, &mut server, &mut credentials)?;
     let mut jumps = Vec::new();
     for jump_id in effective_jump_ids(db, &server)? {
-        let jump_server = db.get_server(&jump_id)?;
+        let mut jump_server = db.get_server(&jump_id)?;
+        let mut jump_credentials = ssh::load_credentials(&jump_server)?;
+        apply_group_defaults(db, &mut jump_server, &mut jump_credentials)?;
         jumps.push(ssh::JumpHost {
-            credentials: ssh::load_credentials(&jump_server)?,
+            credentials: jump_credentials,
             server: jump_server,
         });
     }
@@ -219,29 +221,27 @@ fn apply_group_defaults(
     server: &mut crate::models::Server,
     credentials: &mut ssh::Credentials,
 ) -> AppResult<()> {
-    let Some(group_name) = server.group_name.as_deref() else {
-        return Ok(());
-    };
-    let Ok(group) = db.get_server_group_by_name(group_name) else {
-        return Ok(());
-    };
-    if server.inherit_port {
-        if let Some(port) = group.default_port {
-            server.port = port;
+    if let Some(group_name) = server.group_name.as_deref() {
+        if let Ok(group) = db.get_server_group_by_name(group_name) {
+            if server.inherit_port {
+                if let Some(port) = group.default_port {
+                    server.port = port;
+                }
+            }
+            if server.inherit_username {
+                if let Some(username) = group
+                    .default_username
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    server.username = username.to_string();
+                }
+            }
+            if server.auth_profile_id.is_none() && server.inherit_auth {
+                server.auth_profile_id = group.auth_profile_id.clone();
+            }
         }
-    }
-    if server.inherit_username {
-        if let Some(username) = group
-            .default_username
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            server.username = username.to_string();
-        }
-    }
-    if server.auth_profile_id.is_none() && server.inherit_auth {
-        server.auth_profile_id = group.auth_profile_id.clone();
     }
     if let Some(profile_id) = server.auth_profile_id.as_deref() {
         let profile = db.get_auth_profile(profile_id)?;
@@ -425,7 +425,7 @@ fn execute_with_control(
 fn execute_jobs(
     jobs: &[ConnectionJob],
     runbook: &Runbook,
-    known_hosts: &PathBuf,
+    known_hosts: &Path,
     concurrency: usize,
     timeout: Duration,
     control: &Arc<ExecutionControl>,
@@ -463,7 +463,7 @@ fn execute_jobs(
 fn execute_job(
     job: &ConnectionJob,
     runbook: &Runbook,
-    known_hosts: &PathBuf,
+    known_hosts: &Path,
     timeout: Duration,
     control: &Arc<ExecutionControl>,
 ) -> RunbookServerResult {

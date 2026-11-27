@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use keyring::Entry;
 use reqwest::blocking::Client;
+use reqwest::redirect::Policy;
+use reqwest::Url;
 use serde::Deserialize;
 
 use crate::db::Database;
@@ -13,13 +14,15 @@ use crate::models::{
     CloudResource, Server, ServerGroup, ServerGroupInput, ServerInput,
 };
 use crate::ssh;
-
-const KEYCHAIN_SERVICE: &str = "com.controlvps.app";
+use crate::utils;
 
 pub fn create_account(db: &Database, input: &CloudAccountInput) -> AppResult<CloudAccount> {
     validate_account(input, true)?;
     let account = db.create_cloud_account(input)?;
-    save_token(&account.id, input.token.as_deref())?;
+    if let Err(error) = save_token(&account.id, input.token.as_deref()) {
+        let _ = db.delete_cloud_account(&account.id);
+        return Err(error);
+    }
     db.get_cloud_account(&account.id)
 }
 
@@ -49,7 +52,10 @@ pub fn delete_account(db: &Database, id: &str) -> AppResult<()> {
 pub fn create_profile(db: &Database, input: &AuthProfileInput) -> AppResult<AuthProfile> {
     validate_profile(input, true)?;
     let profile = db.create_auth_profile(input)?;
-    save_profile_secrets(&profile, input)?;
+    if let Err(error) = save_profile_secrets(&profile, input) {
+        let _ = db.delete_auth_profile(&profile.id);
+        return Err(error);
+    }
     db.get_auth_profile(&profile.id)
 }
 
@@ -286,7 +292,10 @@ pub fn import(db: &Database, request: &CloudImportRequest) -> AppResult<CloudImp
             inherit_auth: request.auth_profile_id.is_none(),
         };
         let server = db.create_server(&input)?;
-        ssh::save_credentials(&server, &input)?;
+        if let Err(error) = ssh::save_credentials(&server, &input) {
+            let _ = db.delete_server(&server.id);
+            return Err(error);
+        }
         result.created += 1;
     }
     db.touch_cloud_account(&account.id)?;
@@ -299,6 +308,7 @@ fn fetch(account: &CloudAccount) -> AppResult<Vec<CloudResource>> {
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
+        .redirect(Policy::none())
         .build()
         .map_err(|error| AppError::Message(format!("无法创建云 API 客户端：{error}")))?;
     match account.provider {
@@ -309,16 +319,26 @@ fn fetch(account: &CloudAccount) -> AppResult<Vec<CloudResource>> {
 
 fn fetch_digitalocean(client: &Client, token: &str) -> AppResult<Vec<CloudResource>> {
     let mut resources = Vec::new();
-    let mut url = format!(
-        "{}/v2/droplets?per_page=200",
-        api_base(
-            "CONTROLVPS_DIGITALOCEAN_API",
-            "https://api.digitalocean.com"
-        )
+    let base = api_base(
+        "CONTROLVPS_DIGITALOCEAN_API",
+        "https://api.digitalocean.com",
     );
+    let base_url = Url::parse(&base)
+        .map_err(|error| AppError::Message(format!("DigitalOcean API 地址无效：{error}")))?;
+    let mut url = format!("{base}/v2/droplets?per_page=200");
     for _ in 0..20 {
+        let parsed = Url::parse(&url)
+            .map_err(|error| AppError::Message(format!("DigitalOcean 分页地址无效：{error}")))?;
+        if parsed.scheme() != base_url.scheme()
+            || parsed.host_str() != base_url.host_str()
+            || parsed.port_or_known_default() != base_url.port_or_known_default()
+        {
+            return Err(AppError::Message(
+                "拒绝向非同源的 DigitalOcean 分页地址发送访问令牌".into(),
+            ));
+        }
         let response = client
-            .get(&url)
+            .get(parsed)
             .bearer_auth(token)
             .send()
             .map_err(|error| AppError::Message(format!("DigitalOcean 请求失败：{error}")))?;
@@ -403,7 +423,7 @@ fn fetch_tailscale(client: &Client, token: &str) -> AppResult<Vec<CloudResource>
             let host = device
                 .addresses
                 .iter()
-                .find(|address| address.contains(':'))
+                .find(|address| !address.contains(':'))
                 .or_else(|| device.addresses.first())
                 .cloned()
                 .filter(|address| !address.is_empty())?;
@@ -588,33 +608,23 @@ fn delete_profile_secrets(id: &str) -> AppResult<()> {
     ssh::delete_profile_secret(id, "key-passphrase")
 }
 
-fn token_entry(account_id: &str) -> AppResult<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, &format!("cloud:{account_id}:token"))
-        .map_err(|error| AppError::Keyring(error.to_string()))
+fn token_account(account_id: &str) -> String {
+    format!("cloud:{account_id}:token")
 }
 
 fn save_token(account_id: &str, token: Option<&str>) -> AppResult<()> {
     let Some(token) = token.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(());
     };
-    token_entry(account_id)?
-        .set_password(token)
-        .map_err(|error| AppError::Keyring(error.to_string()))
+    utils::set_secret(&token_account(account_id), token)
 }
 
 fn load_token(account_id: &str) -> AppResult<Option<String>> {
-    match token_entry(account_id)?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(AppError::Keyring(error.to_string())),
-    }
+    utils::get_secret(&token_account(account_id))
 }
 
 fn delete_token(account_id: &str) -> AppResult<()> {
-    match token_entry(account_id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(AppError::Keyring(error.to_string())),
-    }
+    utils::delete_secret(&token_account(account_id))
 }
 
 #[derive(Deserialize)]
